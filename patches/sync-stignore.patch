@@ -1,0 +1,135 @@
+diff --git a/README.md b/README.md
+index 2f5c18f8e..197150ff0 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,11 @@
++# Syncthing with `.stignore` synchronization
++
++This fork synchronizes the root-level `.stignore` file as regular folder
++content, while keeping `.stfolder` and `.stversions` protected as Syncthing
++internals. The `upstream` branch mirrors the official Syncthing `main` branch;
++this fork's `main` branch and releases apply the `.stignore` synchronization
++patch.
++
+ [![Syncthing][14]][15]
+ 
+ ---
+diff --git a/lib/fs/filesystem.go b/lib/fs/filesystem.go
+index 3800bef9c..8e6ecea2e 100644
+--- a/lib/fs/filesystem.go
++++ b/lib/fs/filesystem.go
+@@ -295,8 +295,8 @@ func NewFilesystem(fsType FilesystemType, uri string, opts ...Option) Filesystem
+ }
+ 
+ // fs cannot import config or versioner, so we hard code .stfolder
+-// (config.DefaultMarkerName) and .stversions (versioner.DefaultPath)
+-var internals = []string{".stfolder", ".stignore", ".stversions"}
++// (config.DefaultMarkerName) and .stversions (versioner.DefaultPath).
++var internals = []string{".stfolder", ".stversions"}
+ 
+ // IsInternal returns true if the file, as a path relative to the folder
+ // root, represents an internal file that should always be ignored. The file
+diff --git a/lib/fs/filesystem_test.go b/lib/fs/filesystem_test.go
+index d8d86dfac..51995499a 100644
+--- a/lib/fs/filesystem_test.go
++++ b/lib/fs/filesystem_test.go
+@@ -21,10 +21,8 @@ func TestIsInternal(t *testing.T) {
+ 		internal bool
+ 	}{
+ 		{".stfolder", true},
+-		{".stignore", true},
+ 		{".stversions", true},
+ 		{".stfolder/foo", true},
+-		{".stignore/foo", true},
+ 		{".stversions/foo", true},
+ 
+ 		{".stfolderfoo", false},
+@@ -34,6 +32,8 @@ func TestIsInternal(t *testing.T) {
+ 		{"foo.stignore", false},
+ 		{"foo.stversions", false},
+ 		{"foo/.stfolder", false},
++		{".stignore", false},
++		{".stignore/foo", false},
+ 		{"foo/.stignore", false},
+ 		{"foo/.stversions", false},
+ 	}
+diff --git a/lib/scanner/walk_test.go b/lib/scanner/walk_test.go
+index 4642a52cc..7226f8ad6 100644
+--- a/lib/scanner/walk_test.go
++++ b/lib/scanner/walk_test.go
+@@ -40,6 +40,7 @@ type testfile struct {
+ type testfileList []testfile
+ 
+ var testdata = testfileList{
++	{".stignore", 48, "f60db5c36f642f8a6c1a636024330cd4dba6ab965083542f3629ff7d8c547911"},
+ 	{"afile", 4, "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"},
+ 	{"dir1", 0, ""},
+ 	{filepath.Join("dir1", "dfile"), 5, "49ae93732fcf8d63fe1cce759664982dbd5b23161f007dba8561862adc96d063"},
+diff --git a/lib/model/folder_recvonly_test.go b/lib/model/folder_recvonly_test.go
+index e7b37589a..c8cc9209d 100644
+--- a/lib/model/folder_recvonly_test.go
++++ b/lib/model/folder_recvonly_test.go
+@@ -60,15 +60,15 @@ func TestRecvOnlyRevertDeletes(t *testing.T) {
+ 
+ 	must(t, m.ScanFolder("ro"))
+ 
+-	// We should now have two files and two directories, with global state unchanged.
++	// We should now have three files and two directories, with global state unchanged.
+ 
+ 	size = mustV(m.GlobalSize("ro"))
+ 	if size.Files != 1 || size.Directories != 1 {
+ 		t.Fatalf("Global: expected 1 file and 1 directory: %+v", size)
+ 	}
+ 	size = mustV(m.LocalSize("ro", protocol.LocalDeviceID))
+-	if size.Files != 2 || size.Directories != 2 {
+-		t.Fatalf("Local: expected 2 files and 2 directories: %+v", size)
++	if size.Files != 3 || size.Directories != 2 {
++		t.Fatalf("Local: expected 3 files and 2 directories: %+v", size)
+ 	}
+ 	size = mustV(m.ReceiveOnlySize("ro"))
+ 	if size.Files+size.Directories == 0 {
+diff --git a/lib/model/requests_test.go b/lib/model/requests_test.go
+index 72f7ba3d8..6f8124e97 100644
+--- a/lib/model/requests_test.go
++++ b/lib/model/requests_test.go
+@@ -974,13 +974,15 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
+ 	file := "foobar"
+ 	contents := []byte("test file contents\n")
+ 
+-	basicCheck := func(fs []protocol.FileInfo) {
++	basicCheck := func(fs []protocol.FileInfo) protocol.FileInfo {
+ 		t.Helper()
+-		if len(fs) != 1 {
+-			t.Fatal("expected a single index entry, got", len(fs))
+-		} else if fs[0].Name != file {
+-			t.Fatalf("expected a index entry for %v, got one for %v", file, fs[0].Name)
++		for _, f := range fs {
++			if f.Name == file {
++				return f
++			}
+ 		}
++		t.Fatalf("expected an index entry for %v, got %v", file, fs)
++		return protocol.FileInfo{}
+ 	}
+ 
+ 	done := make(chan struct{})
+@@ -1001,8 +1003,7 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
+ 
+ 	done = make(chan struct{})
+ 	fc.setIndexFn(func(_ context.Context, folder string, fs []protocol.FileInfo) error {
+-		basicCheck(fs)
+-		f := fs[0]
++		f := basicCheck(fs)
+ 		if !f.IsInvalid() {
+ 			t.Errorf("Received non-invalid index update")
+ 		}
+@@ -1022,8 +1023,7 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
+ 
+ 	done = make(chan struct{})
+ 	fc.setIndexFn(func(_ context.Context, folder string, fs []protocol.FileInfo) error {
+-		basicCheck(fs)
+-		f := fs[0]
++		f := basicCheck(fs)
+ 		if f.IsInvalid() {
+ 			t.Errorf("Received invalid index update")
+ 		}
