@@ -21,10 +21,8 @@ func TestIsInternal(t *testing.T) {
 		internal bool
 	}{
 		{".stfolder", true},
-		{".stignore", true},
 		{".stversions", true},
 		{".stfolder/foo", true},
-		{".stignore/foo", true},
 		{".stversions/foo", true},
 
 		{".stfolderfoo", false},
@@ -34,6 +32,8 @@ func TestIsInternal(t *testing.T) {
 		{"foo.stignore", false},
 		{"foo.stversions", false},
 		{"foo/.stfolder", false},
+		{".stignore", false},
+		{".stignore/foo", false},
 		{"foo/.stignore", false},
 		{"foo/.stversions", false},
 	}
