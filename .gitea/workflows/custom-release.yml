@@ -1,0 +1,142 @@
+name: custom release
+
+permissions:
+  contents: write
+  releases: write
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".gitea/workflows/custom-release.yml"
+      - "patches/**"
+      - "scripts/update-custom-release.sh"
+      - "scripts/sync-upstream.sh"
+  workflow_dispatch:
+    inputs:
+      upstream_tag:
+        description: "Optional upstream Syncthing tag, for example v2.1.0"
+        required: false
+      suffix:
+        description: "Optional custom release suffix, for example stignore.7"
+        required: false
+  schedule:
+    - cron: "17 04 * * *"
+
+jobs:
+  build-custom-release:
+    runs-on: ffmini_macos_arm64
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Configure Git author
+        run: |
+          git config user.name "Gitea Actions"
+          git config user.email "actions@git.felixfoertsch.de"
+
+      - name: Mirror upstream and rebuild patched main
+        run: ./scripts/sync-upstream.sh
+        env:
+          SYNC_REMOTE: origin
+
+      - name: Set up tea
+        run: |
+          go install code.gitea.io/tea@v0.14.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$(go env GOPATH)/bin/tea" logins delete actions >/dev/null 2>&1 || true
+          "$(go env GOPATH)/bin/tea" logins add --name actions --url https://git.felixfoertsch.de --token "$GITEA_TOKEN" --no-version-check
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
+
+      - name: Import Developer ID certificate
+        run: |
+          set -euo pipefail
+          keychain_dir="$HOME/Library/Keychains"
+          mkdir -p "$keychain_dir"
+          keychain_path="$keychain_dir/syncthing-release-signing-${GITHUB_RUN_ID:-$$}.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          certificate_path="$RUNNER_TEMP/developer-id-application.p12"
+          previous_default_keychain="$(security default-keychain -d user 2>/dev/null | sed 's/[ "]//g' || true)"
+
+          echo "CUSTOM_RELEASE_KEYCHAIN_PATH=$keychain_path" >> "$GITHUB_ENV"
+          echo "CUSTOM_RELEASE_KEYCHAIN_PASSWORD=$keychain_password" >> "$GITHUB_ENV"
+          echo "CUSTOM_RELEASE_PREVIOUS_DEFAULT_KEYCHAIN=$previous_default_keychain" >> "$GITHUB_ENV"
+
+          if [ -z "$DEVELOPER_ID_APPLICATION_P12_BASE64" ]; then
+            echo "DEVELOPER_ID_APPLICATION_P12_BASE64 secret is required" >&2
+            exit 1
+          fi
+
+          printf '%s' "$DEVELOPER_ID_APPLICATION_P12_BASE64" | base64 -D > "$certificate_path"
+          rm -f "$keychain_path"
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$certificate_path" -k "$keychain_path" -P "$DEVELOPER_ID_APPLICATION_P12_PASSWORD" -A -T /usr/bin/codesign -T /usr/bin/security
+          existing_keychains=()
+          while IFS= read -r existing_keychain; do
+            existing_keychain="$(printf '%s' "$existing_keychain" | sed 's/[ "]//g')"
+            if [ -n "$existing_keychain" ] && [ -e "$existing_keychain" ] && [[ "$existing_keychain" != *"/syncthing-release-signing-"*".keychain-db" ]]; then
+              existing_keychains+=("$existing_keychain")
+            fi
+          done < <(security list-keychains)
+          security list-keychains -s "$keychain_path" "${existing_keychains[@]}"
+          security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}" || true
+          security default-keychain -d user -s "$keychain_path" || true
+          security list-keychains
+          security list-keychains -d user || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path"
+          identity_output="$(security find-identity -v -p codesigning "$keychain_path")"
+          printf '%s\n' "$identity_output"
+          security find-identity -v -p codesigning
+          codesign_identity_sha1="$(printf '%s\n' "$identity_output" | awk '/"Developer ID Application:/ { print $2; exit }')"
+          codesign_identity="$(printf '%s\n' "$identity_output" | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -n 1)"
+          if [ -z "$codesign_identity" ]; then
+            echo "Developer ID Application signing identity is required in DEVELOPER_ID_APPLICATION_P12_BASE64" >&2
+            exit 1
+          fi
+
+          probe_binary="$RUNNER_TEMP/codesign-probe"
+          cp /usr/bin/true "$probe_binary"
+          codesign --force --dryrun --sign "$codesign_identity" --keychain "$keychain_path" --options runtime --timestamp "$probe_binary"
+
+          echo "CUSTOM_RELEASE_CODESIGN_IDENTITY=$codesign_identity" >> "$GITHUB_ENV"
+          echo "CUSTOM_RELEASE_CODESIGN_IDENTITY_SHA1=$codesign_identity_sha1" >> "$GITHUB_ENV"
+        env:
+          DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          DEVELOPER_ID_APPLICATION_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
+
+      - name: Build patched Syncthing release
+        run: ./scripts/update-custom-release.sh
+        env:
+          CUSTOM_RELEASE_UPSTREAM_TAG: ${{ github.event.inputs.upstream_tag }}
+          CUSTOM_RELEASE_SUFFIX: ${{ github.event.inputs.suffix }}
+          CUSTOM_RELEASE_PUSH: "1"
+          CUSTOM_RELEASE_PUSH_BRANCH: "0"
+          CUSTOM_RELEASE_REMOTE: origin
+          CUSTOM_RELEASE_BUILDS: "darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/tar/0"
+          CUSTOM_RELEASE_CODESIGN_TEAM_ID: "NG5W75WE8U"
+          CUSTOM_RELEASE_SIGN_DARWIN: "1"
+          CUSTOM_RELEASE_REQUIRE_GATEKEEPER_ASSESSMENT: "0"
+          CUSTOM_RELEASE_CREATE_GITEA_RELEASE: "1"
+          CUSTOM_RELEASE_TEA_REPO: felixfoertsch/syncthing
+
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          if [ -n "${CUSTOM_RELEASE_PREVIOUS_DEFAULT_KEYCHAIN:-}" ] && [ -e "$CUSTOM_RELEASE_PREVIOUS_DEFAULT_KEYCHAIN" ]; then
+            security default-keychain -d user -s "$CUSTOM_RELEASE_PREVIOUS_DEFAULT_KEYCHAIN" || true
+          fi
+          if [ -n "${CUSTOM_RELEASE_KEYCHAIN_PATH:-}" ]; then
+            security delete-keychain "$CUSTOM_RELEASE_KEYCHAIN_PATH" || true
+          fi
