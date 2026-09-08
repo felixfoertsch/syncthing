@@ -1,0 +1,20 @@
+diff --git a/lib/model/folder.go b/lib/model/folder.go
+--- a/lib/model/folder.go
++++ b/lib/model/folder.go
+@@ -1357,6 +1357,16 @@ func (f *folder) updateLocalsFromPulling(fs []protocol.FileInfo) error {
+ 		return err
+ 	}
+ 	f.emitDiskChangeEvents(fs, events.RemoteChangeDetected)
++	// The watcher may suppress events for files changed by the puller, and
++	// periodic scans may be disabled. Reload remotely changed ignore rules
++	// through the normal scan path, including after deletion. A full scan
++	// also updates entries which became ignored or unignored.
++	for _, file := range fs {
++		if file.Name == ".stignore" && !file.IsInvalid() {
++			f.ScheduleScan()
++			break
++		}
++	}
+ 	return nil
+ }
+ 

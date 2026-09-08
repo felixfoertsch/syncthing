@@ -1,0 +1,52 @@
+name: Review stignore synchronization
+on:
+  push:
+    branches: [review/stignore-sync]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Archive reviewed source
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/review-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-source
+          path: ${{ runner.temp }}/review-source.tar.gz
+          retention-days: 3
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Prepare the exact published release
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/review-release" v2.1.5-stignore.7
+          cp scripts/tests/stignore_sync_test.go.txt "$RUNNER_TEMP/review-release/lib/model/stignore_sync_test.go"
+          cd "$RUNNER_TEMP/review-release"
+          go run build.go assets
+      - name: Reproduce missing remote ignore reload
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP/review-release"
+          if go test -count=1 -timeout=3m -run '^TestStignoreSyncRemoteReload$' ./lib/model > "$RUNNER_TEMP/baseline.log" 2>&1; then
+            cat "$RUNNER_TEMP/baseline.log"
+            echo 'Expected the old patch to fail the remote reload regression' >&2
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/baseline.log"
+          grep -F 'remote .stignore did not trigger a rescan: creation' "$RUNNER_TEMP/baseline.log"
+      - name: Apply fix and test with race detector
+        run: |
+          cd "$RUNNER_TEMP/review-release"
+          git apply "$GITHUB_WORKSPACE/scripts/tests/stignore-reload.patch"
+          go test -race -count=5 -timeout=5m -run '^TestStignoreSync' ./lib/model
+      - name: Run affected package suites
+        run: |
+          cd "$RUNNER_TEMP/review-release"
+          go test -count=1 -timeout=10m ./lib/api/auto ./lib/fs ./lib/ignore ./lib/scanner ./lib/model ./lib/watchaggregator
