@@ -45,6 +45,17 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/review-release"
           git apply "$GITHUB_WORKSPACE/scripts/tests/stignore-reload.patch"
+          # Isolate the timestamp-cache regression before testing the full fix.
+          cp lib/model/folder.go "$RUNNER_TEMP/folder-fixed.go"
+          sed -i '/f\.ignores.Invalidate()/d' lib/model/folder.go
+          if go test -count=1 -timeout=3m -run '^TestStignoreSyncRemoteReload$' ./lib/model > "$RUNNER_TEMP/mtime-baseline.log" 2>&1; then
+            cat "$RUNNER_TEMP/mtime-baseline.log"
+            echo 'Expected unchanged timestamps to expose the old ignore cache' >&2
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/mtime-baseline.log"
+          grep -F 'remote .stignore did not trigger a rescan: replacement' "$RUNNER_TEMP/mtime-baseline.log"
+          cp "$RUNNER_TEMP/folder-fixed.go" lib/model/folder.go
           go test -race -count=5 -timeout=5m -run '^TestStignoreSync' ./lib/model
       - name: Run affected package suites
         run: |

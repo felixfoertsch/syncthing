@@ -19,7 +19,7 @@ import (
 	"github.com/syncthing/syncthing/lib/protocol"
 )
 
-// Do not call ScanFolder or GetIgnores after receiving .stignore: either would
+// Do not call ScanFolder or LoadIgnores after receiving .stignore: either would
 // hide a missing automatic reload. Disable both watcher and periodic scans.
 func TestStignoreSyncRemoteReload(t *testing.T) {
 	w, fcfg := newDefaultCfgWrapper(t)
@@ -63,14 +63,16 @@ func TestStignoreSyncRemoteReload(t *testing.T) {
 			isIgnored("first.txt", true) && isIgnored("second.txt", false)
 	})
 
+	previous, _ := m.testCurrentFolderFile(fcfg.ID, ".stignore")
 	secondRules := []byte("second.txt\n// changed remotely\n")
 	fc.updateFile(".stignore", 0o644, protocol.FileInfoTypeFile, secondRules)
-	// The fake peer uses whole-second mtimes. Give this update a distinct
-	// mtime, as a real edit would, without sleeping or bypassing the cache.
+	// A remote update may retain the previous mtime. Receiving new content
+	// must invalidate the ignore cache instead of silently keeping old rules.
 	fc.mut.Lock()
 	for i := range fc.files {
 		if fc.files[i].Name == ".stignore" {
-			fc.files[i].ModifiedS += 2
+			fc.files[i].ModifiedS = previous.ModifiedS
+			fc.files[i].ModifiedNs = previous.ModifiedNs
 		}
 	}
 	fc.mut.Unlock()

@@ -1,7 +1,27 @@
+diff --git a/lib/ignore/ignore.go b/lib/ignore/ignore.go
+index 9758cf3..43b4e8a 100644
+--- a/lib/ignore/ignore.go
++++ b/lib/ignore/ignore.go
+@@ -190,6 +190,14 @@ func (m *Matcher) Parse(r io.Reader, file string) error {
+ 	return m.parseLocked(r, file)
+ }
+ 
++// Invalidate makes the next Load re-read ignore files even when their mtimes
++// are unchanged, as can happen when a remote update preserves a timestamp.
++func (m *Matcher) Invalidate() {
++	m.mut.Lock()
++	defer m.mut.Unlock()
++	m.changeDetector.Reset()
++}
++
+ func (m *Matcher) parseLocked(r io.Reader, file string) error {
+ 	lines, patterns, err := parseIgnoreFile(m.fs, r, file, m.changeDetector, make(map[string]struct{}))
+ 	// Error is saved and returned at the end. We process the patterns
 diff --git a/lib/model/folder.go b/lib/model/folder.go
+index 79a6b1e..4d1dd38 100644
 --- a/lib/model/folder.go
 +++ b/lib/model/folder.go
-@@ -1357,6 +1357,16 @@ func (f *folder) updateLocalsFromPulling(fs []protocol.FileInfo) error {
+@@ -1336,6 +1336,17 @@ func (f *folder) updateLocalsFromPulling(fs []protocol.FileInfo) error {
  		return err
  	}
  	f.emitDiskChangeEvents(fs, events.RemoteChangeDetected)
@@ -11,6 +31,7 @@ diff --git a/lib/model/folder.go b/lib/model/folder.go
 +	// also updates entries which became ignored or unignored.
 +	for _, file := range fs {
 +		if file.Name == ".stignore" && !file.IsInvalid() {
++			f.ignores.Invalidate()
 +			f.ScheduleScan()
 +			break
 +		}
