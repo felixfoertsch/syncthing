@@ -7,6 +7,9 @@
 package model
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -61,7 +64,16 @@ func TestStignoreSyncRemoteReload(t *testing.T) {
 	})
 
 	secondRules := []byte("second.txt\n// changed remotely\n")
-	fc.addFile(".stignore", 0o644, protocol.FileInfoTypeFile, secondRules)
+	fc.updateFile(".stignore", 0o644, protocol.FileInfoTypeFile, secondRules)
+	// The fake peer uses whole-second mtimes. Give this update a distinct
+	// mtime, as a real edit would, without sleeping or bypassing the cache.
+	fc.mut.Lock()
+	for i := range fc.files {
+		if fc.files[i].Name == ".stignore" {
+			fc.files[i].ModifiedS += 2
+		}
+	}
+	fc.mut.Unlock()
 	fc.sendIndexUpdate()
 	waitFor("replacement", func() bool {
 		return equalContents(tfs, ".stignore", secondRules) == nil &&
@@ -100,5 +112,38 @@ func TestStignoreSyncIgnoreRules(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStignoreSyncRequestAndProtectedPaths(t *testing.T) {
+	m, _, fcfg := setupModelWithConnection(t)
+	tfs := fcfg.Filesystem()
+	defer cleanupModelAndRemoveDir(m, tfs.URI())
+
+	content := []byte("*.tmp\n")
+	writeFile(t, tfs, ".stignore", content)
+	must(t, m.ScanFolder(fcfg.ID))
+	fi, ok := m.testCurrentFolderFile(fcfg.ID, ".stignore")
+	if !ok || fi.IsInvalid() || fi.IsDeleted() {
+		t.Fatal("local .stignore was not indexed as a regular file")
+	}
+	hash := sha256.Sum256(content)
+	res, err := m.Request(device1Conn, &protocol.Request{
+		Folder: fcfg.ID, Name: ".stignore", Size: len(content), Hash: hash[:],
+	})
+	must(t, err)
+	defer res.Close()
+	if !bytes.Equal(res.Data(), content) {
+		t.Fatal("peer did not receive the .stignore contents")
+	}
+	for _, name := range []string{".stfolder", ".stfolder/marker", ".stversions", ".stversions/old"} {
+		res, err := m.Request(device1Conn, &protocol.Request{Folder: fcfg.ID, Name: name, Size: 1})
+		if res != nil {
+			res.Close()
+			t.Errorf("served protected path %s", name)
+		}
+		if !errors.Is(err, protocol.ErrInvalid) {
+			t.Errorf("request for protected path %s: got %v, want ErrInvalid", name, err)
+		}
 	}
 }
