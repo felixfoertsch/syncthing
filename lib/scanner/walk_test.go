@@ -40,6 +40,7 @@ type testfile struct {
 type testfileList []testfile
 
 var testdata = testfileList{
+	{".stignore", 48, "f60db5c36f642f8a6c1a636024330cd4dba6ab965083542f3629ff7d8c547911"},
 	{"afile", 4, "b5bb9d8014a0f9b1d61e21e796d78dccdf1352f23cd32812f4850b878ae4944c"},
 	{"dir1", 0, ""},
 	{filepath.Join("dir1", "dfile"), 5, "49ae93732fcf8d63fe1cce759664982dbd5b23161f007dba8561862adc96d063"},
