@@ -1,3 +1,11 @@
+# Syncthing with `.stignore` synchronization
+
+This fork synchronizes the root-level `.stignore` file as regular folder
+content, while keeping `.stfolder` and `.stversions` protected as Syncthing
+internals. The `upstream` branch mirrors the official Syncthing `main` branch;
+this fork's `main` branch and releases apply the `.stignore` synchronization
+patch.
+
 [![Syncthing][14]][15]
 
 ---
