@@ -208,7 +208,7 @@ jobs:
             if [[ "${CUSTOM_RELEASE_CHANNEL:-stable}" == nightly ]]; then
               channel_args=(--prerelease --latest=false)
             fi
-            gh release create "$tag" --draft --title "$tag" --notes-file dist/release-notes.md --verify-tag "${channel_args[@]}"
+            gh release create "$tag" --draft --title "$tag" --notes-file dist/release-notes.md --verify-tag ${channel_args[@]+"${channel_args[@]}"}
           fi
           # A retry may fill gaps, never replace bytes already attached to a draft.
           if [[ "$RELEASE_EXISTS" == true ]]; then
@@ -225,7 +225,7 @@ jobs:
                 pending+=("$asset")
               fi
             done
-            assets=("${pending[@]}")
+            assets=(${pending[@]+"${pending[@]}"})
           fi
           [[ ${#assets[@]} == 0 ]] || gh release upload "$tag" "${assets[@]}"
           if [[ -n "${CUSTOM_RELEASE_AUTOMATION_REF:-}" ]]; then
