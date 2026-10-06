@@ -2,7 +2,7 @@ name: custom release
 
 permissions:
   contents: write
-  # Disable inherited workflows on every branch, including the pristine mirror.
+  # Disable inherited workflows on every branch, including old branches.
   actions: write
 
 # Every trigger updates the same branches and release tags. Never cancel a publisher.
@@ -51,12 +51,11 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Mirror upstream and rebuild patched main
+      - name: Fetch upstream and rebuild patched main
         run: ./scripts/sync-upstream.sh
         env:
           SYNC_REMOTE: origin
-          # Ephemeral token suppresses CI on mirror pushes; checkout keeps the
-          # PAT for updating the fork-owned workflow files on main.
+          # Checkout keeps the PAT for updating fork-owned workflow files on main.
           GH_TOKEN: ${{ github.token }}
 
       - name: Resolve release and check publication

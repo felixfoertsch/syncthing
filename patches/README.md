@@ -33,11 +33,11 @@ CUSTOM_RELEASE_BUILDS="darwin/amd64/zip darwin/arm64/zip linux/amd64/tar linux/a
 
 `automation` is the maintained branch for fork workflows, scripts and patches.
 `main` is generated from official Syncthing `main` plus the patch stack; do not
-edit generated source there. `upstream` stays a clean upstream mirror.
+edit generated source there. No fork-owned upstream mirror branch is needed.
 
 The Gitea and GitHub workflows trigger on tooling or patch changes on `main`
 and `automation`, on a schedule, and on manual dispatch. They always check out
-`automation`. Before building, each host updates its own `upstream` mirror and
+`automation`. Before building, each host fetches official Syncthing `main` and
 rebuilds patched `main` directly on that commit. Patches are replayed even when
 upstream has not changed, so automation-only edits cannot be skipped.
 Create and publish `automation` with these tooling changes before enabling the

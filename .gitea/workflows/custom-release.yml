@@ -46,7 +46,7 @@ jobs:
           git config user.name "Gitea Actions"
           git config user.email "actions@git.felixfoertsch.de"
 
-      - name: Mirror upstream and rebuild patched main
+      - name: Fetch upstream and rebuild patched main
         run: ./scripts/sync-upstream.sh
         env:
           SYNC_REMOTE: origin

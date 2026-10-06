@@ -6,7 +6,7 @@ Applied patches, oldest first:
 - [Identify patched builds in the web UI](patches/webui-build-marker.patch)
 
 `automation` owns fork tooling and patches; `main` is official Syncthing
-`main` plus these patches. `upstream` remains a pristine mirror.
+`main` plus these patches. Only `automation` and `main` are maintained.
 Releases apply the same patch stack to the latest stable upstream tag.
 See [patch maintenance and operating limits](patches/README.md).
 

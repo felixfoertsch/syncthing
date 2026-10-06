@@ -3,7 +3,6 @@ set -euo pipefail
 
 upstream_url="${SYNC_UPSTREAM_URL:-https://github.com/syncthing/syncthing.git}"
 remote="${SYNC_REMOTE:-origin}"
-upstream_branch="${SYNC_UPSTREAM_BRANCH:-upstream}"
 main_branch="${SYNC_MAIN_BRANCH:-main}"
 tmp=""
 
@@ -16,9 +15,7 @@ cleanup() {
 	[[ -z "$tmp" ]] || rm -rf "$tmp"
 }
 
-# The upstream branch is a byte-for-byte mirror, including upstream workflows.
-# Disable inherited workflows repository-wide (also covers old review branches)
-# and use GITHUB_TOKEN for mirror pushes so they cannot spawn new CI runs.
+# Disable inherited workflows repository-wide, including old review branches.
 is_github_actions() {
 	[[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_SERVER_URL:-}" == "https://github.com" ]]
 }
@@ -41,24 +38,6 @@ enforce_github_workflow_policy() {
 	printf 'Workflow policy verified: only custom-release.yml is allowed to run.\n'
 }
 
-push_upstream_mirror() {
-	local expected="$1"
-	if is_github_actions; then
-		[[ -n "${GH_TOKEN:-}" ]] || die "GitHub mirror push requires the workflow GITHUB_TOKEN"
-		local auth
-		auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\r\n')"
-		printf '::add-mask::%s\n' "$auth"
-		# Clear checkout's PAT header for this command only. Never fall back to
-		# the PAT if this push fails: that would trigger upstream's full CI.
-		GIT_CONFIG_COUNT=2 \
-		GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0= \
-		GIT_CONFIG_KEY_1=http.https://github.com/.extraheader GIT_CONFIG_VALUE_1="AUTHORIZATION: basic $auth" \
-			git push --force-with-lease="$upstream_branch:$expected" "$remote" "$upstream_branch"
-	else
-		git push --force-with-lease="$upstream_branch:$expected" "$remote" "$upstream_branch"
-	fi
-}
-
 main() {
 	[[ -z "$(git status --porcelain)" ]] || die "working tree has uncommitted changes"
 
@@ -67,12 +46,10 @@ main() {
 	fi
 
 	local current_main
-	local current_upstream
 	local new_upstream
 	local upstream_date
 	# Checkout may be on automation or detached; lease the published main, not HEAD.
 	current_main="$(git rev-parse "refs/remotes/$remote/$main_branch")"
-	current_upstream="$(git rev-parse "refs/remotes/$remote/$upstream_branch")"
 
 	git fetch "$upstream_url" "refs/heads/main:refs/remotes/official/main"
 	new_upstream="$(git rev-parse refs/remotes/official/main)"
@@ -87,11 +64,6 @@ main() {
 	cp patches/*.patch patches/README.md "$tmp/patches/"
 	cp scripts/update-custom-release.sh scripts/sync-upstream.sh "$tmp/scripts/"
 	cp scripts/tests/test-custom-release-macos-runner.bats scripts/tests/test-custom-release.py "$tmp/scripts/tests/"
-
-	if [[ "$new_upstream" != "$current_upstream" ]]; then
-		git branch -f "$upstream_branch" "$new_upstream"
-		push_upstream_mirror "$current_upstream"
-	fi
 
 	git checkout -B "$main_branch" "$new_upstream"
 	# Recreate only fork-owned workflows; an upstream update must never restore CI.

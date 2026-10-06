@@ -95,7 +95,6 @@ class ReleaseTests(unittest.TestCase):
         self.run_cmd('git', 'init', '-q', '--bare', '-b', 'main', str(self.remote), cwd=self.base)
         self.run_cmd('git', 'clone', '-q', str(self.upstream), str(self.work), cwd=self.base)
         self.git('remote', 'set-url', 'origin', str(self.remote))
-        self.git('branch', 'upstream')
         for name, target in (('sync-stignore.patch', 'content.txt'),
                              ('webui-build-marker.patch', 'marker.txt')):
             self.write(self.work / 'patches' / name,
@@ -111,7 +110,7 @@ class ReleaseTests(unittest.TestCase):
         self.write(self.work / '.gitea/workflows/custom-release.yml', 'name: fixture\n')
         self.git('add', '.')
         self.git('commit', '-qm', 'fork automation fixture')
-        self.git('push', '-q', 'origin', 'main', 'upstream')
+        self.git('push', '-q', 'origin', 'main')
         self.git('fetch', '-q', 'origin')
         stub = r'''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
@@ -338,8 +337,8 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.run_cmd('bash', str(SYNC))
         self.assertEqual((self.work / 'marker.txt').read_text(), 'updated\n')
         self.assertEqual(self.git('rev-parse', 'automation'), automation)
-        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'upstream'))
-        self.assertEqual(self.git('rev-list', '--count', 'upstream..main'), '1')
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'refs/remotes/official/main'))
+        self.assertEqual(self.git('rev-list', '--count', 'refs/remotes/official/main..main'), '1')
 
     def test_workflow_reads_automation_on_both_branch_triggers(self):
         text = WORKFLOW.read_text()
@@ -408,14 +407,11 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', '.github/workflows'),
                          '.github/workflows/custom-release.yml')
-        self.assertEqual(self.git('show', 'upstream:.github/workflows/upstream.yml'), 'name: upstream')
-        self.assertEqual(self.git('rev-parse', 'upstream', cwd=self.remote),
-                         self.git('rev-parse', 'main', cwd=self.upstream))
         first = self.git('rev-parse', 'main')
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'main'), first)
 
-    def test_future_upstream_workflows_stay_only_in_pristine_mirror(self):
+    def test_future_upstream_workflows_stay_out_of_main(self):
         for host in ('.github', '.gitea'):
             self.write(self.upstream / host / 'workflows/future.yaml', 'name: unwanted future build\n')
         self.git('add', '.', cwd=self.upstream)
@@ -425,53 +421,18 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         for host in ('.github', '.gitea'):
             self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', host + '/workflows'),
                              host + '/workflows/custom-release.yml')
-            self.assertEqual(self.git('show', 'upstream:' + host + '/workflows/future.yaml'),
+            self.assertEqual(self.git('show', 'refs/remotes/official/main:' + host + '/workflows/future.yaml'),
                              'name: unwanted future build')
-        self.assertEqual(self.git('rev-parse', 'upstream^{tree}'),
+        self.assertEqual(self.git('rev-parse', 'refs/remotes/official/main^{tree}'),
                          self.git('rev-parse', 'main^{tree}', cwd=self.upstream))
 
-    def instrument_git_pushes(self):
-        real_git = shutil.which('git', path=os.environ['PATH'])
-        stub = r"""#!/usr/bin/env python3
-import json, os, sys
-args = sys.argv[1:]
-if args and args[0] == 'push':
-    config = {key: value for key, value in os.environ.items()
-              if key == 'GIT_CONFIG_COUNT' or key.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_'))}
-    with open(os.environ['MOCK_LOG'], 'a') as f:
-        f.write(json.dumps(['git-push', args, config]) + '\n')
-    if args[-1] == 'upstream' and os.environ.get('MOCK_MIRROR_PUSH_FAIL') == '1':
-        sys.exit(1)
-os.execv(REAL_GIT, [REAL_GIT] + args)
-""".replace('REAL_GIT', repr(real_git))
-        self.write(self.bin / 'git', stub)
-        (self.bin / 'git').chmod(0o755)
-        self.write(self.upstream / 'new-content', 'upstream change\n')
-        self.git('add', '.', cwd=self.upstream)
-        self.git('commit', '-qm', 'upstream changed', cwd=self.upstream)
+    def test_sync_never_creates_upstream_branch(self):
         self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
-
-    def test_mirror_push_uses_ephemeral_token_without_changing_main_credentials(self):
-        self.configure_github_policy()
-        self.instrument_git_pushes()
         self.run_cmd('bash', str(SYNC))
-        pushes = self.commands('git-push')
-        self.assertEqual([row[1][-1] for row in pushes], ['upstream', 'main'])
-        self.assertEqual(pushes[0][2]['GIT_CONFIG_COUNT'], '2')
-        self.assertEqual(pushes[0][2]['GIT_CONFIG_VALUE_0'], '')
-        import base64
-        expected = 'AUTHORIZATION: basic ' + base64.b64encode(b'x-access-token:test-ephemeral-token').decode()
-        self.assertEqual(pushes[0][2]['GIT_CONFIG_VALUE_1'], expected)
-        self.assertEqual(pushes[1][2], {})
-
-    def test_failed_ephemeral_push_never_retries_with_pat(self):
-        self.configure_github_policy()
-        self.instrument_git_pushes()
-        before = self.git('rev-parse', 'main', cwd=self.remote)
-        self.env['MOCK_MIRROR_PUSH_FAIL'] = '1'
-        self.assertNotEqual(self.run_cmd('bash', str(SYNC), check=False).returncode, 0)
-        self.assertEqual(len(self.commands('git-push')), 1)
-        self.assertEqual(self.git('rev-parse', 'main', cwd=self.remote), before)
+        self.assertEqual(self.git('for-each-ref', '--format=%(refname)',
+                                  'refs/heads/upstream', cwd=self.remote), '')
+        self.assertEqual(self.git('for-each-ref', '--format=%(refname)',
+                                  'refs/heads/upstream'), '')
 
     def test_policy_runs_even_when_upstream_sync_is_a_noop(self):
         self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
@@ -487,7 +448,7 @@ os.execv(REAL_GIT, [REAL_GIT] + args)
         self.assertEqual(sorted(p.name for p in WORKFLOW.parent.iterdir()), ['custom-release.yml'])
         workflow = WORKFLOW.read_text()
         self.assertIn('  actions: write', workflow)
-        sync_step = workflow.split('      - name: Mirror upstream and rebuild patched main')[1].split('      - name:')[0]
+        sync_step = workflow.split('      - name: Fetch upstream and rebuild patched main')[1].split('      - name:')[0]
         self.assertIn('GH_TOKEN: ${{ github.token }}', sync_step)
         self.assertIn('darwin/$darwin_arch/zip/1 linux/amd64/tar/0 linux/arm64/tar/0', workflow)
         self.assertIn("go test -race -count=3 -run '^TestStignoreSync' ./lib/model", RELEASE.read_text())
