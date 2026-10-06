@@ -228,11 +228,14 @@ EOF
 
 	(
 		cd "$dist_dir"
-		if command -v sha256sum >/dev/null 2>&1; then
-			sha256sum ./* > SHA256SUMS
-		else
-			shasum -a 256 ./* > SHA256SUMS
-		fi
+		for asset in ./*; do
+			[[ -f "$asset" && "$asset" != ./release-notes.md && "$asset" != ./SHA256SUMS ]] || continue
+			if command -v sha256sum >/dev/null 2>&1; then
+				sha256sum "$asset"
+			else
+				shasum -a 256 "$asset"
+			fi
+		done > SHA256SUMS
 	)
 }
 

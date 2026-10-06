@@ -195,6 +195,10 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertEqual(self.git('rev-parse', TAG), self.git('rev-parse', TAG, cwd=self.remote))
         self.assertTrue((self.work / 'dist/syncthing-linux-amd64').is_file())
         self.assertTrue(any(row[1] == 'test' for row in self.commands('go')))
+        checksums = (self.work / 'dist/SHA256SUMS').read_text()
+        self.assertNotIn('release-notes.md', checksums)
+        self.assertNotIn('SHA256SUMS', checksums)
+        self.assertIn('syncthing-linux-amd64', checksums)
 
     def test_orphan_remote_tag_rebuilds_exact_commit_without_retagging(self):
         self.release()
