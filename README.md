@@ -1,3 +1,17 @@
+# Patched Syncthing
+
+Applied patches, oldest first:
+
+- [Synchronize root-level `.stignore` files](patches/sync-stignore.patch)
+- [Identify patched builds in the web UI](patches/webui-build-marker.patch)
+
+`automation` owns fork tooling and patches; `main` is official Syncthing
+`main` plus these patches. `upstream` remains a pristine mirror.
+Releases apply the same patch stack to the latest stable upstream tag.
+See [patch maintenance and operating limits](patches/README.md).
+
+---
+
 [![Syncthing][14]][15]
 
 ---
