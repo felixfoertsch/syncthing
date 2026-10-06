@@ -14,6 +14,7 @@ on:
   push:
     branches:
       - main
+      - automation
     paths:
       - ".github/workflows/**"
       - "patches/**"
@@ -38,6 +39,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          ref: automation
           fetch-depth: 0
           token: ${{ secrets.CUSTOM_RELEASE_PUSH_TOKEN }}
 

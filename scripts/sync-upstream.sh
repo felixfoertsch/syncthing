@@ -41,13 +41,6 @@ enforce_github_workflow_policy() {
 	printf 'Workflow policy verified: only custom-release.yml is allowed to run.\n'
 }
 
-only_custom_workflows() {
-	local unexpected
-	unexpected="$(git ls-tree -r --name-only "refs/heads/$main_branch" -- .github/workflows .gitea/workflows |
-		awk '$0 != ".github/workflows/custom-release.yml" && $0 != ".gitea/workflows/custom-release.yml"')" || return 1
-	[[ -z "$unexpected" ]]
-}
-
 push_upstream_mirror() {
 	local expected="$1"
 	if is_github_actions; then
@@ -75,21 +68,15 @@ main() {
 
 	local current_main
 	local current_upstream
-	local main_ahead_count
-	local main_parent
 	local new_upstream
 	local upstream_date
-	current_main="$(git rev-parse "refs/heads/$main_branch")"
+	# Checkout may be on automation or detached; lease the published main, not HEAD.
+	current_main="$(git rev-parse "refs/remotes/$remote/$main_branch")"
 	current_upstream="$(git rev-parse "refs/remotes/$remote/$upstream_branch")"
-	main_ahead_count="$(git rev-list --count "$current_upstream..$current_main")"
-	main_parent="$(git rev-parse "$current_main^" 2>/dev/null || true)"
 
 	git fetch "$upstream_url" "refs/heads/main:refs/remotes/official/main"
 	new_upstream="$(git rev-parse refs/remotes/official/main)"
-	if [[ "$new_upstream" == "$current_upstream" && "$main_ahead_count" == "1" && "$main_parent" == "$current_upstream" ]] && only_custom_workflows; then
-		printf 'Upstream is current and main is exactly one commit ahead at %s.\n' "$new_upstream"
-		return
-	fi
+	# Always replay: automation patches may change even when upstream does not.
 	upstream_date="$(git show -s --format=%cI "$new_upstream")"
 
 	tmp="$(mktemp -d)"
@@ -117,6 +104,10 @@ main() {
 		git -c user.name="Syncthing .stignore Fork" \
 		-c user.email="actions@felixfoertsch.de" \
 		commit -m "apply stignore synchronization patch [skip ci]"
+	if [[ "$(git rev-parse HEAD)" == "$current_main" ]]; then
+		printf 'Upstream is current and patch replay is unchanged at %s.\n' "$new_upstream"
+		return
+	fi
 	git push --force-with-lease="$main_branch:$current_main" "$remote" "$main_branch"
 }
 

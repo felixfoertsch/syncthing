@@ -323,6 +323,29 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'HEAD'), first)
 
+    def test_sync_replays_current_automation_without_upstream_changes(self):
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.git('branch', 'automation')
+        self.run_cmd('bash', str(SYNC))
+        self.git('checkout', 'automation')
+        self.write(self.work / 'patches/webui-build-marker.patch',
+                   'diff --git a/marker.txt b/marker.txt\n'
+                   '--- a/marker.txt\n+++ b/marker.txt\n@@ -1 +1 @@\n-original\n+updated\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'update automation patch')
+        automation = self.git('rev-parse', 'automation')
+        self.git('checkout', '--detach', automation)
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual((self.work / 'marker.txt').read_text(), 'updated\n')
+        self.assertEqual(self.git('rev-parse', 'automation'), automation)
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'upstream'))
+        self.assertEqual(self.git('rev-list', '--count', 'upstream..main'), '1')
+
+    def test_workflow_reads_automation_on_both_branch_triggers(self):
+        text = WORKFLOW.read_text()
+        self.assertIn('      - automation', text)
+        self.assertIn('          ref: automation', text)
+
     def test_workflow_serializes_runs_and_gates_expensive_steps(self):
         text = WORKFLOW.read_text()
         self.assertIn('concurrency:\n  group: custom-release\n  cancel-in-progress: false', text)

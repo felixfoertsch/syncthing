@@ -31,11 +31,19 @@ CUSTOM_RELEASE_CREATE_GITEA_RELEASE=1 CUSTOM_RELEASE_TEA_REPO=felixfoertsch/sync
 CUSTOM_RELEASE_BUILDS="darwin/amd64/zip darwin/arm64/zip linux/amd64/tar linux/arm64/tar" ./scripts/update-custom-release.sh
 ```
 
-The Gitea and GitHub workflows run the script on their respective CI hosts when
-the local patchset changes on `main`, on a schedule, and on manual dispatch.
-The repository's `upstream` branch stays a clean upstream mirror.
-Before building, each host updates its own `upstream` branch from official
-Syncthing `main` and rebuilds its patched `main` directly on that commit.
+`automation` is the maintained branch for fork workflows, scripts and patches.
+`main` is generated from official Syncthing `main` plus the patch stack; do not
+edit generated source there. `upstream` stays a clean upstream mirror.
+
+The Gitea and GitHub workflows trigger on tooling or patch changes on `main`
+and `automation`, on a schedule, and on manual dispatch. They always check out
+`automation`. Before building, each host updates its own `upstream` mirror and
+rebuilds patched `main` directly on that commit. Patches are replayed even when
+upstream has not changed, so automation-only edits cannot be skipped.
+Create and publish `automation` with these tooling changes before enabling the
+updated workflows on `main`; both workflows require that branch to exist.
+Keep the GitHub default branch as `main` so scheduled runs remain enabled.
+
 The script detects the latest upstream Syncthing stable tag, pushes only the
 `<upstream>-stignore-sync` tag by default, and publishes release assets on the CI
 host running the workflow. The local `custom/<version>` branch is only pushed
