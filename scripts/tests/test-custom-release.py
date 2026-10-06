@@ -87,6 +87,7 @@ class ReleaseTests(unittest.TestCase):
         for name in ('content.txt', 'marker.txt'):
             self.write(self.upstream / name, 'original\n')
         self.write(self.upstream / 'build.go', '// fixture only\n')
+        self.write(self.upstream / 'README.md', '# Official Syncthing\n\nOriginal paragraph.\n')
         self.write(self.upstream / '.github/workflows/upstream.yml', 'name: upstream\n')
         self.git('add', '.', cwd=self.upstream)
         self.git('commit', '-qm', 'upstream fixture', cwd=self.upstream)
@@ -101,6 +102,7 @@ class ReleaseTests(unittest.TestCase):
                        f'diff --git a/{target} b/{target}\n'
                        f'--- a/{target}\n+++ b/{target}\n@@ -1 +1 @@\n-original\n+patched\n')
         self.write(self.work / 'patches/README.md', 'Fixture patch documentation\n')
+        self.write(self.work / 'patches/README-prefix.md', (ROOT / 'patches/README-prefix.md').read_text())
         for source, destination in ((RELEASE, 'scripts/update-custom-release.sh'),
                                     (SYNC, 'scripts/sync-upstream.sh'),
                                     (WORKFLOW, '.github/workflows/custom-release.yml'),
@@ -311,6 +313,19 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertNotEqual(self.publish(check=False).returncode, 0)
         self.assertEqual(self.commands('gh'), [])
 
+    def assert_readme(self):
+        readme = (self.work / 'README.md').read_text()
+        self.assertTrue(readme.startswith('This fork follows upstream [Syncthing]'))
+        self.assertEqual(readme.split('\n---\n\n', 1)[1], (self.upstream / 'README.md').read_text())
+        self.assertIn('1. [', readme)
+        self.assertIn('2. [', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/automation/patches/sync-stignore.patch', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/automation/patches/webui-build-marker.patch', readme)
+
+    def test_release_readme_keeps_exact_upstream_suffix(self):
+        self.release()
+        self.assert_readme()
+
     def test_upstream_sync_retains_fixes_and_does_not_self_trigger(self):
         self.write(self.upstream / 'new-upstream-file', 'upstream update\n')
         self.git('add', '.', cwd=self.upstream)
@@ -322,6 +337,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertFalse((self.work / '.github/workflows').exists())
         self.assertEqual((self.work / 'scripts/tests/test-custom-release.py').read_text(), Path(__file__).read_text())
         self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
+        self.assert_readme()
         first = self.git('rev-parse', 'HEAD')
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'HEAD'), first)

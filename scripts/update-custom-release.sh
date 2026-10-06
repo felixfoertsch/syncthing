@@ -104,12 +104,15 @@ copy_patches_to_temp() {
 	local patch_index=0
 
 	mkdir -p "$patch_tmp_dir"
+	printf '%s\n\n' 'This fork follows upstream [Syncthing](https://github.com/syncthing/syncthing) and applies patches below in order. `automation` owns patches and workflows; generated `main` contains upstream source plus these patches. Nightly builds follow upstream default branch; stable builds follow upstream releases.' '# Patched Syncthing' 'Applied patches, oldest first:' > "$patch_tmp_dir/.README-prefix.md"
 	for patch_file in "${patch_files[@]}"; do
 		[[ -f "$patch_file" ]] || die "patch file not found: $patch_file"
 		printf -v patch_name '%03d-%s' "$patch_index" "$(basename "$patch_file")"
 		cp "$patch_file" "$patch_tmp_dir/$patch_name"
 		patch_index=$((patch_index + 1))
+		printf '%s. [%s](https://github.com/felixfoertsch/syncthing/blob/automation/%s)\n' "$patch_index" "$(basename "$patch_file")" "$patch_file" >> "$patch_tmp_dir/.README-prefix.md"
 	done
+	printf '\n---\n\n' >> "$patch_tmp_dir/.README-prefix.md"
 }
 
 fetch_upstream_tag() {
@@ -133,6 +136,8 @@ create_release_commit() {
 		git apply --3way "$patch_file"
 	done
 	remove_upstream_workflows
+	cat "$patch_tmp_dir/.README-prefix.md" README.md > "$patch_tmp_dir/.README.md"
+	cp "$patch_tmp_dir/.README.md" README.md
 	git add -A
 	git commit -m "apply local Syncthing patches for $tag"
 	git tag -a "$custom_tag" -m "Syncthing $tag with local patches"

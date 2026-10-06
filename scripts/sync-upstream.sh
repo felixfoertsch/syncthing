@@ -59,7 +59,7 @@ main() {
 	tmp="$(mktemp -d)"
 	trap cleanup EXIT
 	mkdir -p "$tmp/.gitea/workflows" "$tmp/.github/workflows" "$tmp/patches" "$tmp/scripts/tests"
-	cp patches/*.patch patches/README.md "$tmp/patches/"
+	cp patches/*.patch patches/README.md patches/README-prefix.md "$tmp/patches/"
 	cp scripts/update-custom-release.sh scripts/sync-upstream.sh "$tmp/scripts/"
 	cp scripts/tests/test-custom-release-macos-runner.bats scripts/tests/test-custom-release.py "$tmp/scripts/tests/"
 
@@ -68,6 +68,8 @@ main() {
 	rm -rf .github/workflows .gitea/workflows
 	cp -R "$tmp/patches" "$tmp/scripts" .
 	git apply patches/sync-stignore.patch patches/webui-build-marker.patch
+	cat patches/README-prefix.md README.md > "$tmp/README.md"
+	cp "$tmp/README.md" README.md
 	git add -A
 	# This workflow continues to build; its PAT-authenticated push must not start another run.
 	GIT_AUTHOR_DATE="$upstream_date" GIT_COMMITTER_DATE="$upstream_date" \

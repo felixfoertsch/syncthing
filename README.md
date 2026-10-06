@@ -1,14 +1,13 @@
+This fork follows upstream [Syncthing](https://github.com/syncthing/syncthing) and applies patches below in order. `automation` owns patches and workflows; generated `main` contains upstream source plus these patches. Nightly builds follow upstream default branch; stable builds follow upstream releases.
+
 # Patched Syncthing
 
 Applied patches, oldest first:
 
-- [Synchronize root-level `.stignore` files](patches/sync-stignore.patch)
-- [Identify patched builds in the web UI](patches/webui-build-marker.patch)
+1. [Synchronize root-level `.stignore` files](https://github.com/felixfoertsch/syncthing/blob/automation/patches/sync-stignore.patch)
+2. [Identify patched builds in the web UI](https://github.com/felixfoertsch/syncthing/blob/automation/patches/webui-build-marker.patch)
 
-`automation` owns fork tooling and patches; `main` is official Syncthing
-`main` plus these patches. Only `automation` and `main` are maintained.
-Releases apply the same patch stack to the latest stable upstream tag.
-See [patch maintenance and operating limits](patches/README.md).
+See [fork maintenance](https://github.com/felixfoertsch/syncthing/blob/automation/patches/README.md).
 
 ---
 
