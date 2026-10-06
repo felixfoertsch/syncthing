@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Offline release-automation regressions: real Git repositories, mocked Go/GitHub."""
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -158,7 +159,13 @@ if args[0] == 'api':
         print(json.dumps({'status': status, 'message': 'API fixture error'}))
     sys.exit(1)
 if args[:2] == ['release', 'view']:
-    print(os.environ['MOCK_DRAFT'])
+    if 'assets' in args:
+        print(os.environ.get('MOCK_EXISTING_ASSET', ''))
+    else:
+        print(os.environ['MOCK_DRAFT'])
+if args[:2] == ['release', 'download']:
+    directory = pathlib.Path(args[args.index('--dir') + 1])
+    (directory / args[args.index('--pattern') + 1]).write_text('mismatched archive\n')
 if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '1':
     sys.exit(1)
 '''
@@ -179,13 +186,15 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
 
     def publish(self, check=True):
         self.env['RELEASE_TAG'] = TAG
+        self.env.setdefault('CUSTOM_RELEASE_UPSTREAM_TAG', 'v2.1.5')
         self.env.setdefault('RELEASE_EXISTS', 'false')
         return self.run_cmd('bash', '-euo', 'pipefail', '-c',
                             workflow_script('Publish GitHub release'), check=check)
 
     def fake_assets(self):
         self.write(self.work / 'dist/release-notes.md', '# fixture\n')
-        self.write(self.work / 'dist/SHA256SUMS', 'fixture checksum\n')
+        digest = hashlib.sha256(b'fixture archive\n').hexdigest()
+        self.write(self.work / 'dist/SHA256SUMS', f'{digest}  syncthing-test.tar.gz\n')
         self.write(self.work / 'dist/syncthing-test.tar.gz', 'fixture archive\n')
 
     def test_new_release_uses_latest_stable_and_applies_patches(self):
@@ -266,6 +275,22 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
                 self.assertNotEqual(self.preflight(check=False).returncode, 0)
         self.assertNotIn('should_build=true', (self.base / 'output').read_text())
 
+    def test_nightly_builds_exact_upstream_commit_as_separate_prerelease(self):
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.preflight()
+        commit = self.git('rev-parse', 'main', cwd=self.upstream)
+        tag = f'v2.1.5-nightly.{commit}-stignore-sync'
+        self.assertIn(f'tag={tag}', (self.base / 'output').read_text())
+        self.env['CUSTOM_RELEASE_UPSTREAM_REF'] = commit
+        self.release()
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), commit)
+        self.assertEqual(self.git('rev-parse', tag), self.git('rev-parse', tag, cwd=self.remote))
+        self.assertEqual(self.git('tag', '-l', TAG), '')
+        self.fake_assets()
+        self.publish()
+        self.assertIn('--prerelease', self.commands('gh')[-3])
+        self.assertIn('--latest=false', self.commands('gh')[-3])
+
     def test_manual_tag_and_suffix_are_resolved_once(self):
         self.env.update(CUSTOM_RELEASE_UPSTREAM_TAG='v2.1.4', CUSTOM_RELEASE_SUFFIX='custom-test')
         self.preflight()
@@ -287,7 +312,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertEqual([row[2] for row in commands], ['create', 'upload', 'edit'])
         self.assertIn('--draft', commands[0])
         self.assertIn('--verify-tag', commands[0])
-        self.assertIn('--clobber', commands[1])
+        self.assertNotIn('--clobber', commands[1])
         self.assertIn('--draft=false', commands[2])
         self.assertTrue(all(row[3] == TAG for row in commands))
 
@@ -301,7 +326,15 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.fake_assets()
         self.env.update(RELEASE_EXISTS='true', MOCK_DRAFT='true')
         self.publish()
-        self.assertEqual([row[2] for row in self.commands('gh')], ['view', 'upload', 'edit'])
+        self.assertEqual([row[2] for row in self.commands('gh')], ['view', 'view', 'upload', 'edit'])
+
+    def test_draft_retry_rejects_mismatched_bytes(self):
+        self.fake_assets()
+        self.env.update(RELEASE_EXISTS='true', MOCK_DRAFT='true',
+                        MOCK_EXISTING_ASSET='syncthing-test.tar.gz')
+        self.assertNotEqual(self.publish(check=False).returncode, 0)
+        self.assertNotIn('upload', [row[2] for row in self.commands('gh')])
+        self.assertNotIn('edit', [row[2] for row in self.commands('gh')])
 
     def test_published_release_is_never_clobbered(self):
         self.fake_assets()
@@ -373,7 +406,9 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
             self.assertIn(f"      - name: {name}\n        if: steps.release.outputs.should_build == 'true'", text)
         self.assertIn('python3 scripts/tests/test-custom-release.py', text)
         self.assertIn('CUSTOM_RELEASE_REBUILD_EXISTING: "1"', text)
-        self.assertNotIn('ls-remote', workflow_script('Publish GitHub release'))
+        self.assertIn('refs/heads/automation', workflow_script('Publish GitHub release'))
+        self.assertIn('channel: [stable, nightly]', text)
+        self.assertIn('--prerelease --latest=false', text)
         self.assertIn('RELEASE_TAG: ${{ steps.release.outputs.tag }}', text)
 
 

@@ -6,6 +6,9 @@ set -euo pipefail
 
 upstream_url="${CUSTOM_RELEASE_UPSTREAM_URL:-https://github.com/syncthing/syncthing.git}"
 upstream_tag="${CUSTOM_RELEASE_UPSTREAM_TAG:-}"
+channel="${CUSTOM_RELEASE_CHANNEL:-stable}"
+upstream_ref="${CUSTOM_RELEASE_UPSTREAM_REF:-}"
+automation_ref="${CUSTOM_RELEASE_AUTOMATION_REF:-}"
 suffix="${CUSTOM_RELEASE_SUFFIX:-stignore-sync}"
 branch_prefix="${CUSTOM_RELEASE_BRANCH_PREFIX:-custom}"
 dist_dir="${CUSTOM_RELEASE_DIST_DIR:-dist}"
@@ -79,11 +82,41 @@ tag_exists() {
 }
 
 resolve_upstream_tag() {
+	case "$channel" in
+		stable) [[ -z "$upstream_ref" ]] || die "stable builds cannot override upstream ref" ;;
+		nightly)
+			if [[ -z "$upstream_ref" ]]; then
+				[[ -z "$upstream_tag" ]] || die "nightly builds cannot override upstream tag"
+				upstream_ref="$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')"
+			fi
+			[[ "$upstream_ref" =~ ^[0-9a-f]{40}$ ]] || die "invalid nightly upstream commit"
+			if [[ -z "$upstream_tag" ]]; then
+				upstream_tag="$(latest_stable_tag)-nightly.$upstream_ref"
+			fi
+			[[ "$upstream_tag" == *"-nightly.$upstream_ref" ]] || die "nightly tag does not match upstream commit"
+			;;
+		*) die "invalid release channel: $channel" ;;
+	esac
 	if [[ -z "$upstream_tag" ]]; then
 		upstream_tag="$(latest_stable_tag)"
 	fi
 	[[ "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "invalid upstream tag: $upstream_tag"
 	[[ "$suffix" =~ ^[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]] || die "invalid release suffix: $suffix"
+	if [[ -n "$automation_ref" ]]; then
+		[[ "$automation_ref" =~ ^[0-9a-f]{40}$ ]] || die "invalid automation commit"
+		[[ "$suffix" == *".$automation_ref" ]] || suffix="$suffix.$automation_ref"
+	fi
+}
+
+verify_publication_source() {
+	if [[ -n "$automation_ref" ]]; then
+		[[ "$(git ls-remote "$push_remote" refs/heads/automation | awk '{print $1}')" == "$automation_ref" ]] || die "automation changed during build"
+	fi
+	if [[ "$channel" == nightly ]]; then
+		[[ "$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')" == "$upstream_ref" ]] || die "upstream changed during nightly build"
+	elif [[ -z "${CUSTOM_RELEASE_EXPLICIT_TAG:-}" ]]; then
+		[[ "$(latest_stable_tag)" == "$upstream_tag" ]] || die "upstream stable selection changed during build"
+	fi
 }
 
 checkout_existing_release() {
@@ -94,7 +127,7 @@ checkout_existing_release() {
 		git fetch "$push_remote" "refs/tags/$custom_tag:refs/tags/$custom_tag"
 	fi
 	log "Rebuilding artifacts from existing tag $custom_tag (tag is unchanged)"
-	git checkout -B "$branch" "refs/tags/$custom_tag"
+	git checkout --detach "refs/tags/$custom_tag"
 }
 
 copy_patches_to_temp() {
@@ -118,7 +151,12 @@ copy_patches_to_temp() {
 fetch_upstream_tag() {
 	local tag="$1"
 
-	git fetch --force "$upstream_url" "refs/tags/$tag:refs/tags/$tag"
+	if [[ "$channel" == nightly ]]; then
+		git fetch "$upstream_url" "$upstream_ref"
+		[[ "$(git rev-parse FETCH_HEAD)" == "$upstream_ref" ]] || die "nightly fetch changed commit"
+	else
+		git fetch "$upstream_url" "refs/tags/$tag:refs/tags/$tag"
+	fi
 }
 
 create_release_commit() {
@@ -128,7 +166,7 @@ create_release_commit() {
 	local patch_tmp_dir="$4"
 	local patch_file
 
-	git checkout -B "$branch" "$tag"
+	git checkout --detach "${upstream_ref:-$tag}"
 	rm -rf "$dist_dir"
 	for patch_file in "$patch_tmp_dir"/*; do
 		[[ -f "$patch_file" ]] || continue
@@ -393,6 +431,7 @@ push_refs() {
 	else
 		log "Skipping release branch push because CUSTOM_RELEASE_PUSH_BRANCH=$push_branch"
 	fi
+	verify_publication_source
 	git push "$push_remote" "$custom_tag"
 }
 

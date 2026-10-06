@@ -71,7 +71,7 @@ main() {
 	cat patches/README-prefix.md README.md > "$tmp/README.md"
 	cp "$tmp/README.md" README.md
 	git add -A
-	# This workflow continues to build; its PAT-authenticated push must not start another run.
+	# Job-token push must not start another run.
 	GIT_AUTHOR_DATE="$upstream_date" GIT_COMMITTER_DATE="$upstream_date" \
 		git -c user.name="Syncthing .stignore Fork" \
 		-c user.email="actions@felixfoertsch.de" \
@@ -80,6 +80,10 @@ main() {
 		printf 'Upstream is current and patch replay is unchanged at %s.\n' "$new_upstream"
 		return
 	fi
+	if [[ -n "${CUSTOM_RELEASE_AUTOMATION_REF:-}" ]]; then
+		[[ "$(git ls-remote "$remote" refs/heads/automation | awk '{print $1}')" == "$CUSTOM_RELEASE_AUTOMATION_REF" ]] || die "automation changed during reconstruction"
+	fi
+	[[ "$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')" == "$new_upstream" ]] || die "upstream changed during reconstruction"
 	git push --force-with-lease="$main_branch:$current_main" "$remote" "$main_branch"
 }
 

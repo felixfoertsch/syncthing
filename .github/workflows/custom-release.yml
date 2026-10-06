@@ -34,12 +34,22 @@ on:
 jobs:
   build-custom-release:
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        channel: [stable, nightly]
+    env:
+      CUSTOM_RELEASE_CHANNEL: ${{ matrix.channel }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           ref: automation
           fetch-depth: 0
+
+      - name: Capture automation revision
+        run: echo "CUSTOM_RELEASE_AUTOMATION_REF=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Test release automation
         run: python3 scripts/tests/test-custom-release.py
@@ -64,6 +74,8 @@ jobs:
           tag="${upstream_tag}-${suffix}"
           echo "CUSTOM_RELEASE_UPSTREAM_TAG=$upstream_tag" >> "$GITHUB_ENV"
           echo "CUSTOM_RELEASE_SUFFIX=$suffix" >> "$GITHUB_ENV"
+          echo "CUSTOM_RELEASE_UPSTREAM_REF=$upstream_ref" >> "$GITHUB_ENV"
+          echo "CUSTOM_RELEASE_EXPLICIT_TAG=${EXPLICIT_TAG:-}" >> "$GITHUB_ENV"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
           # A tag alone is not a published release: a previous upload may have failed.
@@ -86,8 +98,9 @@ jobs:
             echo "GitHub release $tag is already published; nothing to do."
           fi
         env:
-          CUSTOM_RELEASE_UPSTREAM_TAG: ${{ github.event.inputs.upstream_tag }}
+          CUSTOM_RELEASE_UPSTREAM_TAG: ${{ matrix.channel == 'stable' && github.event.inputs.upstream_tag || '' }}
           CUSTOM_RELEASE_SUFFIX: ${{ github.event.inputs.suffix }}
+          EXPLICIT_TAG: ${{ github.event.inputs.upstream_tag }}
           GH_TOKEN: ${{ github.token }}
 
       - name: Set up Go
@@ -183,6 +196,7 @@ jobs:
             echo "Release artifacts are missing for $tag" >&2
             exit 1
           }
+          (cd dist && shasum -a 256 -c SHA256SUMS)
           if [[ "$RELEASE_EXISTS" == true ]]; then
             # Never overwrite an already published release, even if another host won.
             if [[ "$(gh release view "$tag" --json isDraft --jq '.isDraft')" != true ]]; then
@@ -190,10 +204,40 @@ jobs:
               exit 0
             fi
           else
-            gh release create "$tag" --draft --title "$tag" --notes-file dist/release-notes.md --verify-tag
+            channel_args=()
+            if [[ "${CUSTOM_RELEASE_CHANNEL:-stable}" == nightly ]]; then
+              channel_args=(--prerelease --latest=false)
+            fi
+            gh release create "$tag" --draft --title "$tag" --notes-file dist/release-notes.md --verify-tag "${channel_args[@]}"
           fi
-          # Partial uploads remain drafts and can be safely completed by a later run.
-          gh release upload "$tag" "${assets[@]}" --clobber
+          # A retry may fill gaps, never replace bytes already attached to a draft.
+          if [[ "$RELEASE_EXISTS" == true ]]; then
+            existing="$RUNNER_TEMP/existing-release-assets"
+            mkdir -p "$existing"
+            names="$(gh release view "$tag" --json assets --jq '.assets[].name')"
+            pending=()
+            for asset in "${assets[@]}"; do
+              name="$(basename "$asset")"
+              if printf '%s\n' "$names" | grep -Fxq "$name"; then
+                gh release download "$tag" --pattern "$name" --dir "$existing"
+                cmp "$asset" "$existing/$name" || { echo "Draft asset differs: $name" >&2; exit 1; }
+              else
+                pending+=("$asset")
+              fi
+            done
+            assets=("${pending[@]}")
+          fi
+          [[ ${#assets[@]} == 0 ]] || gh release upload "$tag" "${assets[@]}"
+          if [[ -n "${CUSTOM_RELEASE_AUTOMATION_REF:-}" ]]; then
+            [[ "$(git ls-remote origin refs/heads/automation | awk '{print $1}')" == "$CUSTOM_RELEASE_AUTOMATION_REF" ]] || exit 1
+          fi
+          if [[ "${CUSTOM_RELEASE_CHANNEL:-stable}" == nightly ]]; then
+            [[ "$(git ls-remote "${CUSTOM_RELEASE_UPSTREAM_URL:-https://github.com/syncthing/syncthing.git}" refs/heads/main | awk '{print $1}')" == "$CUSTOM_RELEASE_UPSTREAM_REF" ]] || exit 1
+          fi
+          if [[ "${CUSTOM_RELEASE_CHANNEL:-stable}" == stable && -z "${CUSTOM_RELEASE_EXPLICIT_TAG:-}" ]]; then
+            latest="$(git ls-remote --refs --tags --sort='version:refname' "${CUSTOM_RELEASE_UPSTREAM_URL:-https://github.com/syncthing/syncthing.git}" 'v[0-9]*' | awk '{t=$2; sub("refs/tags/", "", t); if (t ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) latest=t} END {print latest}')"
+            [[ "$latest" == "$CUSTOM_RELEASE_UPSTREAM_TAG" ]] || exit 1
+          fi
           gh release edit "$tag" --notes-file dist/release-notes.md --draft=false
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
