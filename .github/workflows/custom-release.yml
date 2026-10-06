@@ -13,7 +13,6 @@ concurrency:
 on:
   push:
     branches:
-      - main
       - automation
     paths:
       - ".github/workflows/**"
@@ -41,7 +40,6 @@ jobs:
         with:
           ref: automation
           fetch-depth: 0
-          token: ${{ secrets.CUSTOM_RELEASE_PUSH_TOKEN }}
 
       - name: Test release automation
         run: python3 scripts/tests/test-custom-release.py
@@ -55,7 +53,6 @@ jobs:
         run: ./scripts/sync-upstream.sh
         env:
           SYNC_REMOTE: origin
-          # Checkout keeps the PAT for updating fork-owned workflow files on main.
           GH_TOKEN: ${{ github.token }}
 
       - name: Resolve release and check publication

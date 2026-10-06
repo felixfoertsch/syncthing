@@ -319,7 +319,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'HEAD', cwd=self.upstream))
         self.assertIn('[skip ci]', self.git('log', '-1', '--format=%s'))
-        self.assertEqual((self.work / '.github/workflows/custom-release.yml').read_text(), WORKFLOW.read_text())
+        self.assertFalse((self.work / '.github/workflows').exists())
         self.assertEqual((self.work / 'scripts/tests/test-custom-release.py').read_text(), Path(__file__).read_text())
         self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
         first = self.git('rev-parse', 'HEAD')
@@ -410,7 +410,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', '.github/workflows'),
-                         '.github/workflows/custom-release.yml')
+                         '')
         first = self.git('rev-parse', 'main')
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'main'), first)
@@ -424,7 +424,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.run_cmd('bash', str(SYNC))
         for host in ('.github', '.gitea'):
             self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', host + '/workflows'),
-                             host + '/workflows/custom-release.yml')
+                             '')
             self.assertEqual(self.git('show', 'refs/remotes/official/main:' + host + '/workflows/future.yaml'),
                              'name: unwanted future build')
         self.assertEqual(self.git('rev-parse', 'refs/remotes/official/main^{tree}'),

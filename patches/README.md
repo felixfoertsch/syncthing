@@ -35,14 +35,15 @@ CUSTOM_RELEASE_BUILDS="darwin/amd64/zip darwin/arm64/zip linux/amd64/tar linux/a
 `main` is generated from official Syncthing `main` plus the patch stack; do not
 edit generated source there. No fork-owned upstream mirror branch is needed.
 
-The Gitea and GitHub workflows trigger on tooling or patch changes on `main`
-and `automation`, on a schedule, and on manual dispatch. They always check out
+The Gitea and GitHub workflows trigger on tooling or patch changes on
+`automation`, on a schedule, and on manual dispatch. They always check out
 `automation`. Before building, each host fetches official Syncthing `main` and
 rebuilds patched `main` directly on that commit. Patches are replayed even when
 upstream has not changed, so automation-only edits cannot be skipped.
 Create and publish `automation` with these tooling changes before enabling the
 updated workflows on `main`; both workflows require that branch to exist.
-Keep the GitHub default branch as `main` so scheduled runs remain enabled.
+Keep `automation` as the GitHub default branch so scheduled runs remain enabled.
+Generated `main` has no workflows; GitHub supplies its push token automatically.
 
 The script detects the latest upstream Syncthing stable tag, pushes only the
 `<upstream>-stignore-sync` tag by default, and publishes release assets on the CI

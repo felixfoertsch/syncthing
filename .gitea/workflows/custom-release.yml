@@ -7,7 +7,6 @@ permissions:
 on:
   push:
     branches:
-      - main
       - automation
     paths:
       - ".gitea/workflows/custom-release.yml"

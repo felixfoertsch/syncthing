@@ -59,8 +59,6 @@ main() {
 	tmp="$(mktemp -d)"
 	trap cleanup EXIT
 	mkdir -p "$tmp/.gitea/workflows" "$tmp/.github/workflows" "$tmp/patches" "$tmp/scripts/tests"
-	cp .gitea/workflows/custom-release.yml "$tmp/.gitea/workflows/"
-	cp .github/workflows/custom-release.yml "$tmp/.github/workflows/"
 	cp patches/*.patch patches/README.md "$tmp/patches/"
 	cp scripts/update-custom-release.sh scripts/sync-upstream.sh "$tmp/scripts/"
 	cp scripts/tests/test-custom-release-macos-runner.bats scripts/tests/test-custom-release.py "$tmp/scripts/tests/"
@@ -68,7 +66,7 @@ main() {
 	git checkout -B "$main_branch" "$new_upstream"
 	# Recreate only fork-owned workflows; an upstream update must never restore CI.
 	rm -rf .github/workflows .gitea/workflows
-	cp -R "$tmp/.gitea" "$tmp/.github" "$tmp/patches" "$tmp/scripts" .
+	cp -R "$tmp/patches" "$tmp/scripts" .
 	git apply patches/sync-stignore.patch patches/webui-build-marker.patch
 	git add -A
 	# This workflow continues to build; its PAT-authenticated push must not start another run.
