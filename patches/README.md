@@ -1,83 +1,35 @@
-# Local Syncthing Patches
+# Local Syncthing patches
 
-Apply the local patches manually after pulling a new upstream Syncthing release:
+`patch-queue` owns control scripts, workflows and ordered `NNNN` patches.
+`main` contains upstream default-branch source plus all accepted patches, without
+control scripts, queue files or workflows. Stable archives use latest numeric
+upstream release; nightly archives use upstream default-branch commit. Both
+channels replay identical queue and stop on conflicts; exact reverse application
+alone proves absorption.
 
-```bash
-git apply patches/sync-stignore.patch patches/webui-build-marker.patch
-go run build.go -build-out bin/syncthing-stignore build syncthing
-```
+GitHub workflow uses built-in job token, macos-14 ARM64 runner, Developer ID
+signing, Darwin ARM64 zip and Linux amd64/arm64 tar archives. Nightly releases
+are prereleases, never latest. Future stable tags use
+`<upstream-tag>-YYYY.MM.DD.N` with Europe/Berlin date and first free same-day
+counter. Existing tags/assets remain immutable. Set explicit suffix to resume
+an interrupted draft; retry checks existing asset bytes before filling gaps.
+Build jobs hold read-only token, no persisted checkout credentials and no signing
+secrets. Separate fresh hosted ARM64 publisher checks exact event control SHA,
+complete archive hashes, safe member paths, embedded Go version metadata and
+reconstructed source commit before importing production key. Publisher signs
+existing Darwin binary without executing it or downloaded source scripts.
+Only validated nightly candidate advances `main`, with expected-SHA lease and
+fresh queue/upstream checks. Hosted jobs are isolated; no persistent runner used.
 
-The automated release flow uses:
+Offline regressions:
 
-```bash
-./scripts/update-custom-release.sh
-```
-
-By default the script finds the latest stable upstream tag, creates a local
-`custom/<version>-<suffix>` branch, applies all local patches, removes upstream
-GitHub/Gitea workflow files from the release commit, tags
-`<upstream>-stignore-sync`, regenerates embedded GUI assets, runs focused tests,
-and writes build artifacts to `dist/`.
-
-Useful options:
-
-```bash
-CUSTOM_RELEASE_UPSTREAM_TAG=v2.1.0 ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_REBUILD_EXISTING=1 ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_PATCHES="patches/sync-stignore.patch patches/webui-build-marker.patch" ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_PUSH=1 CUSTOM_RELEASE_REMOTE=gitea ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_PUSH=1 CUSTOM_RELEASE_PUSH_BRANCH=1 CUSTOM_RELEASE_REMOTE=gitea ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_CREATE_GITEA_RELEASE=1 CUSTOM_RELEASE_TEA_REPO=felixfoertsch/syncthing ./scripts/update-custom-release.sh
-CUSTOM_RELEASE_BUILDS="darwin/amd64/zip darwin/arm64/zip linux/amd64/tar linux/arm64/tar" ./scripts/update-custom-release.sh
-```
-
-`automation` is the maintained branch for fork workflows, scripts and patches.
-`main` is generated from official Syncthing `main` plus the patch stack; do not
-edit generated source there. No fork-owned upstream mirror branch is needed.
-
-The Gitea and GitHub workflows trigger on tooling or patch changes on
-`automation`, on a schedule, and on manual dispatch. They always check out
-`automation`. Before building, each host fetches official Syncthing `main` and
-rebuilds patched `main` directly on that commit. Patches are replayed even when
-upstream has not changed, so automation-only edits cannot be skipped.
-Create and publish `automation` with these tooling changes before enabling the
-updated workflows on `main`; both workflows require that branch to exist.
-Keep `automation` as the GitHub default branch so scheduled runs remain enabled.
-Generated `main` has no workflows; GitHub supplies its push token automatically.
-
-The script detects the latest upstream Syncthing stable tag, pushes only the
-`<upstream>-stignore-sync` tag by default, and publishes release assets on the CI
-host running the workflow. The local `custom/<version>` branch is only pushed
-when `CUSTOM_RELEASE_PUSH_BRANCH=1` is set. The workflow builds macOS arm64,
-Linux amd64, and Linux arm64 archives. Both hosts sign their macOS builds with
-their configured Developer ID certificate.
-
-## Retry-safe GitHub releases
-
-GitHub serializes release runs and the automated upstream-sync commit uses
-`[skip ci]`, so its push does not recursively start another build. Scheduled
-and manually dispatched runs are unaffected. The upstream tag and suffix are
-resolved once and reused for both the build and publication.
-
-A published GitHub release is skipped before Go setup, signing or building.
-A tag without a published release is not considered complete: the workflow
-rebuilds artifacts from that exact tagged commit, without moving or recreating
-the tag. Assets are uploaded to a draft, which is published only after every
-upload succeeds. A later run resumes an interrupted draft upload.
-
-Outside the GitHub workflow, the script still skips existing tags by default.
-Set `CUSTOM_RELEASE_REBUILD_EXISTING=1` to rebuild their artifacts. The normal
-release name is `<upstream>-stignore-sync`, for example `v2.1.5-stignore-sync`.
-Only the upstream version advances; there is no independent patch counter.
-Published tags remain immutable. Old numbered releases remain historical releases;
-the new naming does not relabel binaries with an incorrect embedded version.
-
-Offline automation regression tests (Python standard library, Git and jq;
-Go and GitHub API operations are mocked):
-
-```bash
+```fish
 python3 scripts/tests/test-custom-release.py
+bats scripts/tests/test-custom-release-macos-runner.bats
 ```
+
+Local release builds change checkout to detached generated source; use disposable
+clone. Explicit `CUSTOM_RELEASE_SUFFIX` must match `YYYY.MM.DD.N`.
 
 The patch makes root-level `.stignore` sync like regular folder content while
 keeping `.stfolder` and `.stversions` protected as internal Syncthing paths.

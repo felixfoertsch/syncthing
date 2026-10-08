@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+"""Verify remote release bytes before publication, including already published tags."""
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+def verify(candidate, release):
+	candidate = Path(candidate)
+	metadata = json.loads((candidate / 'candidate.json').read_text())
+	expected = set(metadata['assets']) | {'SHA256SUMS'}
+	assets = release['assets']
+	assert len(assets) == len(expected) and {a['name'] for a in assets} == expected
+	assert release['tag_name'] == metadata['tag']
+	assert release['prerelease'] == (metadata['channel'] == 'nightly')
+	prefix = f'https://github.com/felixfoertsch/syncthing/releases/download/{metadata["tag"]}/'
+	for asset in assets:
+		local = candidate / asset['name']
+		if release.get('draft'):
+			assert asset['url'] == f'https://api.github.com/repos/felixfoertsch/syncthing/releases/assets/{asset["id"]}'
+		else:
+			assert asset['browser_download_url'] == prefix + asset['name']
+		assert asset['size'] == local.stat().st_size
+		assert asset['digest'] == 'sha256:' + hashlib.sha256(local.read_bytes()).hexdigest()
+
+
+if __name__ == '__main__':
+	# GitHub tag endpoint omits drafts; authenticated release listing includes them.
+	pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp', 'repos/felixfoertsch/syncthing/releases?per_page=100']))
+	matches = [release for page in pages for release in page if release['tag_name'] == sys.argv[2]]
+	assert len(matches) == 1
+	verify(sys.argv[1], matches[0])

@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / '.github/workflows/custom-release.yml'
 RELEASE = ROOT / 'scripts/update-custom-release.sh'
 SYNC = ROOT / 'scripts/sync-upstream.sh'
-TAG = 'v2.1.5-stignore-sync'
+TAG = 'v2.1.5-2026.10.08.1'
 
 
 def workflow_script(name):
@@ -69,6 +69,7 @@ class ReleaseTests(unittest.TestCase):
             'GIT_CONFIG_NOSYSTEM': '1',
             'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
             'CUSTOM_RELEASE_UPSTREAM_URL': str(self.upstream),
+            'CUSTOM_RELEASE_SUFFIX': '2026.10.08.1',
             'CUSTOM_RELEASE_BUILDS': 'linux/amd64/binary/0',
             'CUSTOM_RELEASE_SIGN_DARWIN': '0',
             'CUSTOM_RELEASE_PUSH': '1',
@@ -97,8 +98,8 @@ class ReleaseTests(unittest.TestCase):
         self.run_cmd('git', 'init', '-q', '--bare', '-b', 'main', str(self.remote), cwd=self.base)
         self.run_cmd('git', 'clone', '-q', str(self.upstream), str(self.work), cwd=self.base)
         self.git('remote', 'set-url', 'origin', str(self.remote))
-        for name, target in (('sync-stignore.patch', 'content.txt'),
-                             ('webui-build-marker.patch', 'marker.txt')):
+        for name, target in (('0001-sync-stignore.patch', 'content.txt'),
+                             ('0002-webui-build-marker.patch', 'marker.txt')):
             self.write(self.work / 'patches' / name,
                        f'diff --git a/{target} b/{target}\n'
                        f'--- a/{target}\n+++ b/{target}\n@@ -1 +1 @@\n-original\n+patched\n')
@@ -106,13 +107,17 @@ class ReleaseTests(unittest.TestCase):
         self.write(self.work / 'patches/README-prefix.md', (ROOT / 'patches/README-prefix.md').read_text())
         for source, destination in ((RELEASE, 'scripts/update-custom-release.sh'),
                                     (SYNC, 'scripts/sync-upstream.sh'),
+                                    (ROOT / 'scripts/reconstruct.sh', 'scripts/reconstruct.sh'),
                                     (WORKFLOW, '.github/workflows/custom-release.yml'),
                                     (Path(__file__), 'scripts/tests/test-custom-release.py')):
             self.write(self.work / destination, source.read_text())
         self.write(self.work / 'scripts/tests/test-custom-release-macos-runner.bats', '# fixture\n')
+        self.write(self.work / 'scripts/check-freshness.sh', '#!/usr/bin/env bash\nexit 0\n')
+        self.write(self.work / 'scripts/verify-release.py', '# fixture: tested separately\n')
         self.write(self.work / '.gitea/workflows/custom-release.yml', 'name: fixture\n')
         self.git('add', '.')
         self.git('commit', '-qm', 'fork automation fixture')
+        self.git('branch', 'patch-queue')
         self.git('push', '-q', 'origin', 'main')
         self.git('fetch', '-q', 'origin')
         stub = r'''#!/usr/bin/env python3
@@ -178,24 +183,28 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
 
     def commands(self, name):
         return [row for row in map(json.loads, (self.base / 'commands.jsonl').read_text().splitlines())
-                if row[0] == name]
+                if row[0] == name and not (name == 'gh' and row[1] == 'api' and '/releases/tags/' in row[2])]
 
     def preflight(self, check=True):
         return self.run_cmd('bash', '-euo', 'pipefail', '-c',
-                            workflow_script('Resolve release and check publication'), check=check)
+                            'source scripts/update-custom-release.sh; resolve_upstream_tag; printf \"tag=%s-%s\\n\" \"$upstream_tag\" \"$suffix\" >> \"$GITHUB_OUTPUT\"', check=check)
 
     def publish(self, check=True):
         self.env['RELEASE_TAG'] = TAG
+        self.env.setdefault('CUSTOM_RELEASE_CHANNEL', 'stable')
         self.env.setdefault('CUSTOM_RELEASE_UPSTREAM_TAG', 'v2.1.5')
+        self.env.setdefault('CUSTOM_RELEASE_UPSTREAM_REF', self.git('rev-parse', 'v2.1.5', cwd=self.upstream))
         self.env.setdefault('RELEASE_EXISTS', 'false')
+        if self.env['RELEASE_EXISTS'] == 'true':
+            self.env['MOCK_API_STATUS'] = '200'
         return self.run_cmd('bash', '-euo', 'pipefail', '-c',
                             workflow_script('Publish GitHub release'), check=check)
 
     def fake_assets(self):
-        self.write(self.work / 'dist/release-notes.md', '# fixture\n')
+        self.write(self.work / 'candidate/release-notes.md', '# fixture\n')
         digest = hashlib.sha256(b'fixture archive\n').hexdigest()
-        self.write(self.work / 'dist/SHA256SUMS', f'{digest}  syncthing-test.tar.gz\n')
-        self.write(self.work / 'dist/syncthing-test.tar.gz', 'fixture archive\n')
+        self.write(self.work / 'candidate/SHA256SUMS', f'{digest}  syncthing-test.tar.gz\n')
+        self.write(self.work / 'candidate/syncthing-test.tar.gz', 'fixture archive\n')
 
     def test_new_release_uses_latest_stable_and_applies_patches(self):
         self.release()
@@ -248,53 +257,31 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertIn('could not check tag', result.stderr)
         self.assertEqual(self.commands('go'), [])
 
-    def test_published_release_skips_build(self):
-        self.env['MOCK_API_STATUS'] = '200'
-        self.preflight()
-        outputs = (self.base / 'output').read_text()
-        self.assertIn('should_build=false', outputs)
-        self.assertIn(f'tag={TAG}', outputs)
-        self.assertIn('CUSTOM_RELEASE_UPSTREAM_TAG=v2.1.5', (self.base / 'env').read_text())
-        self.assertEqual(self.commands('go'), [])
 
-    def test_404_release_is_built(self):
-        self.preflight()
-        self.assertIn('should_build=true', (self.base / 'output').read_text())
-        self.assertIn('release_exists=false', (self.base / 'output').read_text())
 
-    def test_draft_release_is_resumed(self):
-        self.env.update(MOCK_API_STATUS='200', MOCK_DRAFT='true')
-        self.preflight()
-        self.assertIn('should_build=true', (self.base / 'output').read_text())
-        self.assertIn('release_exists=true', (self.base / 'output').read_text())
 
-    def test_authentication_and_transport_errors_fail_closed(self):
-        for status in ('401', '403', '500', 'transport'):
-            with self.subTest(status=status):
-                self.env['MOCK_API_STATUS'] = status
-                self.assertNotEqual(self.preflight(check=False).returncode, 0)
-        self.assertNotIn('should_build=true', (self.base / 'output').read_text())
 
     def test_nightly_builds_exact_upstream_commit_as_separate_prerelease(self):
         self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
         self.preflight()
         commit = self.git('rev-parse', 'main', cwd=self.upstream)
-        tag = f'v2.1.5-nightly.{commit}-stignore-sync'
+        tag = f'v2.1.5-nightly.{commit}-2026.10.08.1'
         self.assertIn(f'tag={tag}', (self.base / 'output').read_text())
         self.env['CUSTOM_RELEASE_UPSTREAM_REF'] = commit
         self.release()
         self.assertEqual(self.git('rev-parse', 'HEAD^'), commit)
         self.assertEqual(self.git('rev-parse', tag), self.git('rev-parse', tag, cwd=self.remote))
         self.assertEqual(self.git('tag', '-l', TAG), '')
+        self.git('checkout', '--detach', 'patch-queue')
         self.fake_assets()
         self.publish()
         self.assertIn('--prerelease', self.commands('gh')[-3])
         self.assertIn('--latest=false', self.commands('gh')[-3])
 
     def test_manual_tag_and_suffix_are_resolved_once(self):
-        self.env.update(CUSTOM_RELEASE_UPSTREAM_TAG='v2.1.4', CUSTOM_RELEASE_SUFFIX='custom-test')
+        self.env.update(CUSTOM_RELEASE_UPSTREAM_TAG='v2.1.4', CUSTOM_RELEASE_SUFFIX='2026.10.08.1')
         self.preflight()
-        self.assertIn('tag=v2.1.4-custom-test', (self.base / 'output').read_text())
+        self.assertIn('tag=v2.1.4-2026.10.08.1', (self.base / 'output').read_text())
 
     def test_invalid_inputs_are_rejected_before_api_call(self):
         for key, value in (('CUSTOM_RELEASE_UPSTREAM_TAG', 'main'),
@@ -352,8 +339,8 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertEqual(readme.split('\n---\n\n', 1)[1], (self.upstream / 'README.md').read_text())
         self.assertIn('1. [', readme)
         self.assertIn('2. [', readme)
-        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/automation/patches/sync-stignore.patch', readme)
-        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/automation/patches/webui-build-marker.patch', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0001-sync-stignore.patch', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0002-webui-build-marker.patch', readme)
 
     def test_release_readme_keeps_exact_upstream_suffix(self):
         self.release()
@@ -368,48 +355,79 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'HEAD', cwd=self.upstream))
         self.assertIn('[skip ci]', self.git('log', '-1', '--format=%s'))
         self.assertFalse((self.work / '.github/workflows').exists())
-        self.assertEqual((self.work / 'scripts/tests/test-custom-release.py').read_text(), Path(__file__).read_text())
+        self.assertFalse((self.work / 'scripts').exists())
         self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
         self.assert_readme()
         first = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '--detach', 'patch-queue')
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'HEAD'), first)
 
     def test_sync_replays_current_automation_without_upstream_changes(self):
         self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
-        self.git('branch', 'automation')
         self.run_cmd('bash', str(SYNC))
-        self.git('checkout', 'automation')
-        self.write(self.work / 'patches/webui-build-marker.patch',
+        self.git('checkout', 'patch-queue')
+        self.write(self.work / 'patches/0002-webui-build-marker.patch',
                    'diff --git a/marker.txt b/marker.txt\n'
                    '--- a/marker.txt\n+++ b/marker.txt\n@@ -1 +1 @@\n-original\n+updated\n')
         self.git('add', '.')
         self.git('commit', '-qm', 'update automation patch')
-        automation = self.git('rev-parse', 'automation')
+        automation = self.git('rev-parse', 'patch-queue')
         self.git('checkout', '--detach', automation)
         self.run_cmd('bash', str(SYNC))
         self.assertEqual((self.work / 'marker.txt').read_text(), 'updated\n')
-        self.assertEqual(self.git('rev-parse', 'automation'), automation)
+        self.assertEqual(self.git('rev-parse', 'patch-queue'), automation)
         self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'refs/remotes/official/main'))
         self.assertEqual(self.git('rev-list', '--count', 'refs/remotes/official/main..main'), '1')
 
-    def test_workflow_reads_automation_on_both_branch_triggers(self):
-        text = WORKFLOW.read_text()
-        self.assertIn('      - automation', text)
-        self.assertIn('          ref: automation', text)
+    def test_exact_absorption_is_accepted_but_conflicts_stop(self):
+        self.write(self.upstream / 'content.txt', 'patched\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'absorb first patch', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.release()
+        self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
+        self.assertEqual((self.work / 'marker.txt').read_text(), 'patched\n')
+        self.assertFalse((self.work / 'patches').exists())
 
-    def test_workflow_serializes_runs_and_gates_expensive_steps(self):
-        text = WORKFLOW.read_text()
-        self.assertIn('concurrency:\n  group: custom-release\n  cancel-in-progress: false', text)
-        for name in ('Set up Go', 'Import Developer ID certificate',
-                     'Build patched Syncthing release', 'Publish GitHub release'):
-            self.assertIn(f"      - name: {name}\n        if: steps.release.outputs.should_build == 'true'", text)
-        self.assertIn('python3 scripts/tests/test-custom-release.py', text)
-        self.assertIn('CUSTOM_RELEASE_REBUILD_EXISTING: "1"', text)
-        self.assertIn('refs/heads/automation', workflow_script('Publish GitHub release'))
-        self.assertIn('channel: [stable, nightly]', text)
-        self.assertIn('--prerelease --latest=false', text)
-        self.assertIn('RELEASE_TAG: ${{ steps.release.outputs.tag }}', text)
+    def test_patch_conflict_never_publishes(self):
+        self.write(self.upstream / 'content.txt', 'conflicting upstream\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'conflict', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        result = self.release(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('patch conflict', result.stderr)
+        self.assertEqual(self.git('tag', '-l', '*2026.10.08*', cwd=self.remote), '')
+
+    def test_stale_patch_queue_stops_tag_publication(self):
+        self.env['CUSTOM_RELEASE_AUTOMATION_REF'] = '0' * 40
+        result = self.release(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('automation changed during build', result.stderr)
+        self.assertEqual(self.git('tag', '-l', TAG, cwd=self.remote), '')
+
+    def test_sync_rejects_remote_main_race_without_overwriting_winner(self):
+        self.write(self.work / 'race.txt', 'concurrent main\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'concurrent publication')
+        winner = self.git('rev-parse', 'HEAD')
+        self.git('push', '-q', 'origin', 'main')
+        # Simulate checkout fetched before competing publisher advanced main.
+        self.git('update-ref', 'refs/remotes/origin/main', self.git('rev-parse', 'patch-queue'))
+        self.git('checkout', '--detach', 'patch-queue')
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        result = self.run_cmd('bash', str(SYNC), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('main changed during reconstruction', result.stderr)
+        self.assertEqual(self.git('rev-parse', 'main', cwd=self.remote), winner)
+
+    def test_default_suffix_uses_berlin_date_and_next_free_counter(self):
+        self.env.pop('CUSTOM_RELEASE_SUFFIX')
+        day = self.run_cmd('env', 'TZ=Europe/Berlin', 'date', '+%Y.%m.%d').stdout.strip()
+        self.git('tag', f'v2.1.5-{day}.1')
+        self.preflight()
+        self.assertIn(f'tag=v2.1.5-{day}.2', (self.base / 'output').read_text())
 
 
     def configure_github_policy(self):
@@ -463,6 +481,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', '.github/workflows'),
                          '')
         first = self.git('rev-parse', 'main')
+        self.git('checkout', '--detach', 'patch-queue')
         self.run_cmd('bash', str(SYNC))
         self.assertEqual(self.git('rev-parse', 'main'), first)
 
@@ -493,21 +512,13 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
         self.run_cmd('bash', str(SYNC))
         before = self.git('rev-parse', 'main')
+        self.git('checkout', '--detach', 'patch-queue')
         self.configure_github_policy()
         result = self.run_cmd('bash', str(SYNC))
         self.assertIn('Workflow policy verified', result.stdout)
         self.assertIn('Upstream is current', result.stdout)
         self.assertEqual(self.git('rev-parse', 'main'), before)
 
-    def test_workflow_scope_keeps_only_custom_release_and_its_existing_gates(self):
-        self.assertEqual(sorted(p.name for p in WORKFLOW.parent.iterdir()), ['custom-release.yml'])
-        workflow = WORKFLOW.read_text()
-        self.assertIn('  actions: write', workflow)
-        sync_step = workflow.split('      - name: Fetch upstream and rebuild patched main')[1].split('      - name:')[0]
-        self.assertIn('GH_TOKEN: ${{ github.token }}', sync_step)
-        self.assertIn('darwin/$darwin_arch/zip/1 linux/amd64/tar/0 linux/arm64/tar/0', workflow)
-        self.assertIn("go test -race -count=3 -run '^TestStignoreSync' ./lib/model", RELEASE.read_text())
-        self.assertIn('./lib/watchaggregator', RELEASE.read_text())
 
 
 if __name__ == '__main__':

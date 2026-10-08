@@ -47,44 +47,36 @@ main() {
 
 	local current_main
 	local new_upstream
-	local upstream_date
-	# Checkout may be on automation or detached; lease the published main, not HEAD.
+	# Lease published main, not control checkout HEAD.
 	current_main="$(git rev-parse "refs/remotes/$remote/$main_branch")"
 
-	git fetch "$upstream_url" "refs/heads/main:refs/remotes/official/main"
+	source scripts/reconstruct.sh
+	local upstream_default
+	upstream_default="$(upstream_default_ref)"
+	git fetch "$upstream_url" "$upstream_default:refs/remotes/official/main"
 	new_upstream="$(git rev-parse refs/remotes/official/main)"
-	# Always replay: automation patches may change even when upstream does not.
-	upstream_date="$(git show -s --format=%cI "$new_upstream")"
+	# Replay queue even when upstream has not changed.
 
 	tmp="$(mktemp -d)"
 	trap cleanup EXIT
-	mkdir -p "$tmp/.gitea/workflows" "$tmp/.github/workflows" "$tmp/patches" "$tmp/scripts/tests"
-	cp patches/*.patch patches/README.md patches/README-prefix.md "$tmp/patches/"
-	cp scripts/update-custom-release.sh scripts/sync-upstream.sh "$tmp/scripts/"
-	cp scripts/tests/test-custom-release-macos-runner.bats scripts/tests/test-custom-release.py "$tmp/scripts/tests/"
+	mkdir -p "$tmp/patches"
+	cp patches/[0-9]*.patch patches/README-prefix.md "$tmp/patches/"
 
 	git checkout -B "$main_branch" "$new_upstream"
-	# Recreate only fork-owned workflows; an upstream update must never restore CI.
-	rm -rf .github/workflows .gitea/workflows
-	cp -R "$tmp/patches" "$tmp/scripts" .
-	git apply patches/sync-stignore.patch patches/webui-build-marker.patch
-	cat patches/README-prefix.md README.md > "$tmp/README.md"
-	cp "$tmp/README.md" README.md
-	git add -A
-	# Job-token push must not start another run.
-	GIT_AUTHOR_DATE="$upstream_date" GIT_COMMITTER_DATE="$upstream_date" \
-		git -c user.name="Syncthing .stignore Fork" \
-		-c user.email="actions@felixfoertsch.de" \
-		commit -m "apply stignore synchronization patch [skip ci]"
+	apply_patch_queue "$tmp"/patches/[0-9]*.patch
+	commit_reconstruction "$new_upstream" "$tmp/patches/README-prefix.md"
+	if [[ -n "${CUSTOM_RELEASE_AUTOMATION_REF:-}" ]]; then
+		[[ "$(git ls-remote "$remote" refs/heads/patch-queue | awk '{print $1}')" == "$CUSTOM_RELEASE_AUTOMATION_REF" ]] || die "automation changed during reconstruction"
+	fi
+	[[ "$(git ls-remote "$upstream_url" "$upstream_default" | awk '{print $1}')" == "$new_upstream" ]] || die "upstream changed during reconstruction"
+	[[ "$(git ls-remote "$remote" "refs/heads/$main_branch" | awk '{print $1}')" == "$current_main" ]] || die "main changed during reconstruction"
 	if [[ "$(git rev-parse HEAD)" == "$current_main" ]]; then
 		printf 'Upstream is current and patch replay is unchanged at %s.\n' "$new_upstream"
 		return
 	fi
-	if [[ -n "${CUSTOM_RELEASE_AUTOMATION_REF:-}" ]]; then
-		[[ "$(git ls-remote "$remote" refs/heads/automation | awk '{print $1}')" == "$CUSTOM_RELEASE_AUTOMATION_REF" ]] || die "automation changed during reconstruction"
+	if [[ "${SYNC_PUSH:-1}" == 1 ]]; then
+		git push --force-with-lease="$main_branch:$current_main" "$remote" "$main_branch"
 	fi
-	[[ "$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')" == "$new_upstream" ]] || die "upstream changed during reconstruction"
-	git push --force-with-lease="$main_branch:$current_main" "$remote" "$main_branch"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

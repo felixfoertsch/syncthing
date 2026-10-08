@@ -9,7 +9,8 @@ upstream_tag="${CUSTOM_RELEASE_UPSTREAM_TAG:-}"
 channel="${CUSTOM_RELEASE_CHANNEL:-stable}"
 upstream_ref="${CUSTOM_RELEASE_UPSTREAM_REF:-}"
 automation_ref="${CUSTOM_RELEASE_AUTOMATION_REF:-}"
-suffix="${CUSTOM_RELEASE_SUFFIX:-stignore-sync}"
+suffix="${CUSTOM_RELEASE_SUFFIX:-}"
+source "$(dirname "${BASH_SOURCE[0]}")/reconstruct.sh"
 branch_prefix="${CUSTOM_RELEASE_BRANCH_PREFIX:-custom}"
 dist_dir="${CUSTOM_RELEASE_DIST_DIR:-dist}"
 target="${CUSTOM_RELEASE_TARGET:-syncthing}"
@@ -37,10 +38,7 @@ if [[ -n "${CUSTOM_RELEASE_PATCHES:-}" ]]; then
 elif [[ -n "${CUSTOM_RELEASE_PATCH:-}" ]]; then
 	patch_files=("$CUSTOM_RELEASE_PATCH")
 else
-	patch_files=(
-		patches/sync-stignore.patch
-		patches/webui-build-marker.patch
-	)
+	patch_files=(patches/[0-9]*.patch)
 fi
 
 log() {
@@ -87,7 +85,7 @@ resolve_upstream_tag() {
 		nightly)
 			if [[ -z "$upstream_ref" ]]; then
 				[[ -z "$upstream_tag" ]] || die "nightly builds cannot override upstream tag"
-				upstream_ref="$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')"
+				upstream_ref="$(git ls-remote "$upstream_url" "$(upstream_default_ref)" | awk '{print $1}')"
 			fi
 			[[ "$upstream_ref" =~ ^[0-9a-f]{40}$ ]] || die "invalid nightly upstream commit"
 			if [[ -z "$upstream_tag" ]]; then
@@ -101,21 +99,33 @@ resolve_upstream_tag() {
 		upstream_tag="$(latest_stable_tag)"
 	fi
 	[[ "$upstream_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || die "invalid upstream tag: $upstream_tag"
-	[[ "$suffix" =~ ^[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]] || die "invalid release suffix: $suffix"
+	if [[ -z "$suffix" ]]; then
+		local day index=1
+		day="$(TZ=Europe/Berlin date +%Y.%m.%d)"
+		while tag_exists "$upstream_tag-$day.$index"; do
+			index=$((index + 1))
+		done
+		suffix="$day.$index"
+	fi
+	[[ "$suffix" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[1-9][0-9]*$ ]] || die "invalid release suffix: $suffix"
 	if [[ -n "$automation_ref" ]]; then
 		[[ "$automation_ref" =~ ^[0-9a-f]{40}$ ]] || die "invalid automation commit"
-		[[ "$suffix" == *".$automation_ref" ]] || suffix="$suffix.$automation_ref"
 	fi
 }
 
 verify_publication_source() {
 	if [[ -n "$automation_ref" ]]; then
-		[[ "$(git ls-remote "$push_remote" refs/heads/automation | awk '{print $1}')" == "$automation_ref" ]] || die "automation changed during build"
+		[[ "$(git ls-remote "$push_remote" refs/heads/patch-queue | awk '{print $1}')" == "$automation_ref" ]] || die "automation changed during build"
 	fi
 	if [[ "$channel" == nightly ]]; then
-		[[ "$(git ls-remote "$upstream_url" refs/heads/main | awk '{print $1}')" == "$upstream_ref" ]] || die "upstream changed during nightly build"
-	elif [[ -z "${CUSTOM_RELEASE_EXPLICIT_TAG:-}" ]]; then
-		[[ "$(latest_stable_tag)" == "$upstream_tag" ]] || die "upstream stable selection changed during build"
+		[[ "$(git ls-remote "$upstream_url" "$(upstream_default_ref)" | awk '{print $1}')" == "$upstream_ref" ]] || die "upstream changed during nightly build"
+	else
+		local selected
+		selected="$(git ls-remote "$upstream_url" "refs/tags/$upstream_tag" "refs/tags/$upstream_tag^{}" | awk 'NR == 1 {sha=$1} /\^\{\}$/ {sha=$1} END {print sha}')"
+		[[ "$selected" == "$upstream_ref" ]] || die "upstream stable tag changed during build"
+		if [[ -z "${CUSTOM_RELEASE_EXPLICIT_TAG:-}" ]]; then
+			[[ "$(latest_stable_tag)" == "$upstream_tag" ]] || die "upstream stable selection changed during build"
+		fi
 	fi
 }
 
@@ -137,15 +147,13 @@ copy_patches_to_temp() {
 	local patch_index=0
 
 	mkdir -p "$patch_tmp_dir"
-	printf '%s\n\n' 'This fork follows upstream [Syncthing](https://github.com/syncthing/syncthing) and applies patches below in order. `automation` owns patches and workflows; generated `main` contains upstream source plus these patches. Nightly builds follow upstream default branch; stable builds follow upstream releases.' '# Patched Syncthing' 'Applied patches, oldest first:' > "$patch_tmp_dir/.README-prefix.md"
+	cp patches/README-prefix.md "$patch_tmp_dir/.README-prefix.md"
 	for patch_file in "${patch_files[@]}"; do
 		[[ -f "$patch_file" ]] || die "patch file not found: $patch_file"
 		printf -v patch_name '%03d-%s' "$patch_index" "$(basename "$patch_file")"
 		cp "$patch_file" "$patch_tmp_dir/$patch_name"
 		patch_index=$((patch_index + 1))
-		printf '%s. [%s](https://github.com/felixfoertsch/syncthing/blob/automation/%s)\n' "$patch_index" "$(basename "$patch_file")" "$patch_file" >> "$patch_tmp_dir/.README-prefix.md"
 	done
-	printf '\n---\n\n' >> "$patch_tmp_dir/.README-prefix.md"
 }
 
 fetch_upstream_tag() {
@@ -156,6 +164,7 @@ fetch_upstream_tag() {
 		[[ "$(git rev-parse FETCH_HEAD)" == "$upstream_ref" ]] || die "nightly fetch changed commit"
 	else
 		git fetch "$upstream_url" "refs/tags/$tag:refs/tags/$tag"
+		upstream_ref="$(git rev-parse "$tag^{commit}")"
 	fi
 }
 
@@ -168,39 +177,9 @@ create_release_commit() {
 
 	git checkout --detach "${upstream_ref:-$tag}"
 	rm -rf "$dist_dir"
-	for patch_file in "$patch_tmp_dir"/*; do
-		[[ -f "$patch_file" ]] || continue
-		log "Applying $(basename "$patch_file")"
-		git apply --3way "$patch_file"
-	done
-	remove_upstream_workflows
-	cat "$patch_tmp_dir/.README-prefix.md" README.md > "$patch_tmp_dir/.README.md"
-	cp "$patch_tmp_dir/.README.md" README.md
-	git add -A
-	git commit -m "apply local Syncthing patches for $tag"
-	git tag -a "$custom_tag" -m "Syncthing $tag with local patches"
-}
-
-remove_upstream_workflows() {
-	local workflow_dir
-
-	for workflow_dir in .github/workflows .gitea/workflows; do
-		if [[ -e "$workflow_dir" ]]; then
-			log "Removing upstream workflow directory $workflow_dir from release commit"
-			rm -rf "$workflow_dir"
-		fi
-	done
-}
-
-delete_local_tag_if_forced() {
-	local tag="$1"
-
-	if [[ "$force" != "1" ]]; then
-		return
-	fi
-	if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
-		git tag -d "$tag"
-	fi
+	apply_patch_queue "$patch_tmp_dir"/*.patch
+	commit_reconstruction "${upstream_ref:-$tag}" "$patch_tmp_dir/.README-prefix.md"
+	git -c user.name='Syncthing patch queue' -c user.email='actions@felixfoertsch.de' -c tag.gpgsign=false tag -a "$custom_tag" -m "Syncthing $tag with local patches; patch-queue $automation_ref"
 }
 
 test_release() {
@@ -464,6 +443,7 @@ publish_release() {
 
 main() {
 	require_clean_worktree
+	[[ "$force" == 0 ]] || die "release tags are immutable; choose a new suffix"
 
 	resolve_upstream_tag
 
@@ -482,8 +462,13 @@ main() {
 
 		copy_patches_to_temp "$patch_tmp_dir"
 		fetch_upstream_tag "$upstream_tag"
-		delete_local_tag_if_forced "$custom_tag"
 		create_release_commit "$upstream_tag" "$custom_tag" "$branch" "$patch_tmp_dir"
+	fi
+	if [[ "$channel" == stable ]]; then
+		upstream_ref="$(git rev-parse HEAD^)"
+		if [[ -n "${GITHUB_ENV:-}" ]]; then
+			printf 'CUSTOM_RELEASE_UPSTREAM_REF=%s\n' "$upstream_ref" >> "$GITHUB_ENV"
+		fi
 	fi
 	test_release
 	build_release "$custom_tag"
