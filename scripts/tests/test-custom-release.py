@@ -342,6 +342,20 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0001-sync-stignore.patch', readme)
         self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0002-webui-build-marker.patch', readme)
 
+    def test_root_readme_consolidation_preserves_both_documents_and_nested_files(self):
+        docker = '# Docker fixture\n\nOriginal Docker text.\n'
+        self.write(self.upstream / 'README-Docker.md', docker)
+        self.write(self.upstream / 'nested/README.md', 'Nested unchanged\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'upstream Docker documentation', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.release()
+        readme = (self.work / 'README.md').read_text()
+        self.assertIn((self.upstream / 'README.md').read_text(), readme)
+        self.assertTrue(readme.endswith(docker))
+        self.assertEqual([p.name for p in self.work.glob('README*')], ['README.md'])
+        self.assertEqual((self.work / 'nested/README.md').read_text(), 'Nested unchanged\n')
+
     def test_release_readme_keeps_exact_upstream_suffix(self):
         self.release()
         self.assert_readme()

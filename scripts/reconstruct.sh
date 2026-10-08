@@ -27,6 +27,12 @@ commit_reconstruction() {
 	date="$(git show -s --format=%cI "$source")"
 	rm -rf .github/workflows .gitea/workflows
 	cat "$prefix" README.md > README.fork.tmp
+	# Consolidate root variant without changing either upstream document's bytes.
+	if [[ -f README-Docker.md ]]; then
+		printf '\n\n---\n\n<a id="docker-container-for-syncthing"></a>\n\n' >> README.fork.tmp
+		cat README-Docker.md >> README.fork.tmp
+		rm README-Docker.md
+	fi
 	mv README.fork.tmp README.md
 	git add -A
 	GIT_AUTHOR_DATE="$date" GIT_COMMITTER_DATE="$date" \

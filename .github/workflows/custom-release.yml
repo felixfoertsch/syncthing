@@ -38,7 +38,7 @@ jobs:
       matrix:
         channel: [stable, nightly]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, Node.js 24
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -51,7 +51,7 @@ jobs:
         run: |
           python3 scripts/tests/test-custom-release.py
           python3 scripts/tests/test-publisher.py
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6, Node.js 24
         with:
           go-version-file: go.mod
           cache: false
@@ -62,7 +62,7 @@ jobs:
           CHANNEL: ${{ matrix.channel }}
           CUSTOM_RELEASE_UPSTREAM_TAG: ${{ matrix.channel == 'stable' && github.event.inputs.upstream_tag || '' }}
           CUSTOM_RELEASE_SUFFIX: ${{ github.event.inputs.suffix }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
         with:
           name: candidate-${{ matrix.channel }}
           path: candidate/
@@ -84,16 +84,16 @@ jobs:
       CUSTOM_RELEASE_AUTOMATION_REF: ${{ github.sha }}
       CUSTOM_RELEASE_EXPLICIT_TAG: ${{ github.event.inputs.upstream_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, Node.js 24
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7, Node.js 24
         with:
           name: candidate-${{ matrix.channel }}
           path: candidate
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6, Node.js 24
         with:
           go-version-file: go.mod
           cache: false
