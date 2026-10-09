@@ -4,6 +4,11 @@ set -euo pipefail
 for tool in git python3 gh jq codesign security openssl shasum zip unzip tar; do
 	command -v "$tool" >/dev/null || exit 1
 done
+if [[ -f candidate/unchanged ]]; then
+	[[ "$(python3 scripts/select-release.py)" == skip ]] || exit 1
+	printf 'skipped=true\n' >> "$GITHUB_OUTPUT"
+	exit 0
+fi
 python3 scripts/verify-candidate.py candidate "$CONTROL" "$CHANNEL" > "$RUNNER_TEMP/verified-fields"
 while IFS='=' read -r key value; do
 	case "$key" in

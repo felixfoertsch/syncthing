@@ -7,11 +7,13 @@ import subprocess
 import sys
 
 
-def verify(candidate, release):
+def verify(candidate, release, archives_only=False):
 	candidate = Path(candidate)
 	metadata = json.loads((candidate / 'candidate.json').read_text())
-	expected = set(metadata['assets']) | {'SHA256SUMS'}
-	assets = release['assets']
+	expected = set(metadata['assets'])
+	if not archives_only:
+		expected.add('SHA256SUMS')
+	assets = [a for a in release['assets'] if not archives_only or a['name'] != 'SHA256SUMS']
 	assert len(assets) == len(expected) and {a['name'] for a in assets} == expected
 	assert release['tag_name'] == metadata['tag']
 	assert release['prerelease'] == (metadata['channel'] == 'nightly')
@@ -31,4 +33,5 @@ if __name__ == '__main__':
 	pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp', 'repos/felixfoertsch/syncthing/releases?per_page=100']))
 	matches = [release for page in pages for release in page if release['tag_name'] == sys.argv[2]]
 	assert len(matches) == 1
-	verify(sys.argv[1], matches[0])
+	assert len(sys.argv) == 3 or (len(sys.argv) == 4 and sys.argv[3] == 'archives')
+	verify(sys.argv[1], matches[0], archives_only=len(sys.argv) == 4)

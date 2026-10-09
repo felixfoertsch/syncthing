@@ -24,6 +24,10 @@ on:
       suffix:
         description: "Optional custom release suffix, for example 2026.10.08.1"
         required: false
+      rebuild:
+        description: "Build new immutable release even when source is unchanged"
+        type: boolean
+        default: false
   schedule:
     - cron: "17 04 * * *"
 
@@ -51,17 +55,39 @@ jobs:
         run: |
           python3 scripts/tests/test-custom-release.py
           python3 scripts/tests/test-publisher.py
+          python3 scripts/tests/test-unchanged-release.py
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6, Node.js 24
         with:
           go-version-file: go.mod
           cache: false
+      - name: Select unchanged publication
+        id: selection
+        run: |
+          decision="$(python3 scripts/select-release.py)"
+          if [[ "$decision" == skip ]]; then
+            echo 'skip=true' >> "$GITHUB_OUTPUT"
+            mkdir candidate
+            touch candidate/unchanged
+          elif [[ "$decision" == build:* && -n "${decision#build:}" ]]; then
+            echo "suffix=${decision#build:}" >> "$GITHUB_OUTPUT"
+            echo 'CUSTOM_RELEASE_REBUILD_EXISTING=1' >> "$GITHUB_ENV"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL: ${{ github.sha }}
+          CHANNEL: ${{ matrix.channel }}
+          CUSTOM_RELEASE_UPSTREAM_TAG: ${{ matrix.channel == 'stable' && github.event.inputs.upstream_tag || '' }}
+          CUSTOM_RELEASE_SUFFIX: ${{ github.event.inputs.suffix }}
+          CUSTOM_RELEASE_FORCE: ${{ github.event.inputs.rebuild == 'true' && '1' || '0' }}
+          CUSTOM_RELEASE_EXPLICIT_TAG: ${{ github.event.inputs.upstream_tag }}
       - name: Build unsigned candidate
+        if: steps.selection.outputs.skip != 'true'
         run: bash scripts/build-candidate.sh
         env:
           CONTROL: ${{ github.sha }}
           CHANNEL: ${{ matrix.channel }}
           CUSTOM_RELEASE_UPSTREAM_TAG: ${{ matrix.channel == 'stable' && github.event.inputs.upstream_tag || '' }}
-          CUSTOM_RELEASE_SUFFIX: ${{ github.event.inputs.suffix }}
+          CUSTOM_RELEASE_SUFFIX: ${{ steps.selection.outputs.suffix || github.event.inputs.suffix }}
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
         with:
           name: candidate-${{ matrix.channel }}
@@ -101,9 +127,17 @@ jobs:
         id: verify
         run: bash scripts/verify-source.sh
         env:
+          GH_TOKEN: ${{ github.token }}
           CONTROL: ${{ github.sha }}
           CHANNEL: ${{ matrix.channel }}
+          CUSTOM_RELEASE_UPSTREAM_TAG: ${{ matrix.channel == 'stable' && github.event.inputs.upstream_tag || '' }}
+      - name: Reuse verified immutable draft archives
+        if: steps.verify.outputs.skipped != 'true'
+        run: python3 scripts/reuse-draft.py candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Import Developer ID certificate
+        if: steps.verify.outputs.skipped != 'true' && env.CUSTOM_RELEASE_REUSE_DARWIN != '1'
         run: |
           set -euo pipefail
           keychain_path="$RUNNER_TEMP/syncthing-release-signing.keychain-db"
@@ -152,12 +186,15 @@ jobs:
           DEVELOPER_ID_APPLICATION_P12_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD }}
 
       - name: Sign verified archive without executing candidate
+        if: steps.verify.outputs.skipped != 'true'
         run: python3 scripts/verify-candidate.py candidate "$CUSTOM_RELEASE_AUTOMATION_REF" "$CUSTOM_RELEASE_CHANNEL" sign
       - name: Publish verified source refs
+        if: steps.verify.outputs.skipped != 'true'
         run: bash scripts/publish-source.sh
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Publish GitHub release
+        if: steps.verify.outputs.skipped != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -173,9 +210,11 @@ jobs:
           assets=()
           for asset in candidate/*; do
             [ -f "$asset" ] || continue
-            case "$(basename "$asset")" in release-notes.md|candidate.json|source.bundle) continue ;; esac
+            case "$(basename "$asset")" in release-notes.md|candidate.json|source.bundle|SHA256SUMS) continue ;; esac
             assets+=("$asset")
           done
+          # Archive uploads may partially succeed; attach checksums only after verification.
+          assets+=(candidate/SHA256SUMS)
           [[ ${#assets[@]} -gt 1 && -s candidate/SHA256SUMS && -s candidate/release-notes.md ]] || {
             echo "Release artifacts are missing for $tag" >&2
             exit 1
@@ -212,7 +251,18 @@ jobs:
             done
             assets=(${pending[@]+"${pending[@]}"})
           fi
-          [[ ${#assets[@]} == 0 ]] || gh release upload "$tag" "${assets[@]}"
+          archives=()
+          upload_checksums=false
+          for asset in ${assets[@]+"${assets[@]}"}; do
+            if [[ "$(basename "$asset")" == SHA256SUMS ]]; then
+              upload_checksums=true
+            else
+              archives+=("$asset")
+            fi
+          done
+          [[ ${#archives[@]} == 0 ]] || gh release upload "$tag" "${archives[@]}"
+          python3 scripts/verify-release.py candidate "$tag" archives
+          [[ "$upload_checksums" == false ]] || gh release upload "$tag" candidate/SHA256SUMS
           python3 scripts/verify-release.py candidate "$tag"
           bash scripts/check-freshness.sh
           if [[ "$CUSTOM_RELEASE_CHANNEL" == nightly ]]; then

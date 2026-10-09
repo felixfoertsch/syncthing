@@ -275,8 +275,8 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.git('checkout', '--detach', 'patch-queue')
         self.fake_assets()
         self.publish()
-        self.assertIn('--prerelease', self.commands('gh')[-3])
-        self.assertIn('--latest=false', self.commands('gh')[-3])
+        self.assertIn('--prerelease', self.commands('gh')[0])
+        self.assertIn('--latest=false', self.commands('gh')[0])
 
     def test_manual_tag_and_suffix_are_resolved_once(self):
         self.env.update(CUSTOM_RELEASE_UPSTREAM_TAG='v2.1.4', CUSTOM_RELEASE_SUFFIX='2026.10.08.1')
@@ -296,11 +296,13 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.fake_assets()
         self.publish()
         commands = self.commands('gh')
-        self.assertEqual([row[2] for row in commands], ['create', 'upload', 'edit'])
+        self.assertEqual([row[2] for row in commands], ['create', 'upload', 'upload', 'edit'])
+        self.assertNotIn('candidate/SHA256SUMS', commands[1])
+        self.assertEqual(commands[2][-1], 'candidate/SHA256SUMS')
         self.assertIn('--draft', commands[0])
         self.assertIn('--verify-tag', commands[0])
         self.assertNotIn('--clobber', commands[1])
-        self.assertIn('--draft=false', commands[2])
+        self.assertIn('--draft=false', commands[3])
         self.assertTrue(all(row[3] == TAG for row in commands))
 
     def test_upload_failure_does_not_publish_incomplete_release(self):
@@ -313,7 +315,7 @@ if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '
         self.fake_assets()
         self.env.update(RELEASE_EXISTS='true', MOCK_DRAFT='true')
         self.publish()
-        self.assertEqual([row[2] for row in self.commands('gh')], ['view', 'view', 'upload', 'edit'])
+        self.assertEqual([row[2] for row in self.commands('gh')], ['view', 'view', 'upload', 'upload', 'edit'])
 
     def test_draft_retry_rejects_mismatched_bytes(self):
         self.fake_assets()

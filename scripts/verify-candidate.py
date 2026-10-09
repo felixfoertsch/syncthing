@@ -75,9 +75,23 @@ def verify_build_info(candidate, metadata):
 				assert 'CGO_ENABLED=1' in info and 'modernc.org/sqlite' not in info
 
 
+def verify_signature(archive):
+	with tempfile.TemporaryDirectory() as tmp:
+		with zipfile.ZipFile(archive) as z:
+			binary = Path(tmp) / 'syncthing'
+			binary.write_bytes(z.read(archive.name.removesuffix('.zip') + '/syncthing'))
+		subprocess.run(['codesign', '--verify', '--strict', str(binary)], check=True)
+		details = subprocess.run(['codesign', '-dv', '--verbose=4', str(binary)], capture_output=True, text=True, check=True)
+		assert 'TeamIdentifier=NG5W75WE8U' in details.stderr
+
+
 def sign(candidate, metadata):
 	name = next(n for n in metadata['assets'] if n.endswith('.zip'))
 	archive = Path(candidate) / name
+	if os.environ.get('CUSTOM_RELEASE_REUSE_DARWIN') == '1':
+		verify_signature(archive)
+		write_checksums(candidate, metadata)
+		return
 	with tempfile.TemporaryDirectory() as tmp:
 		with zipfile.ZipFile(archive) as z:
 			z.extractall(tmp)
@@ -92,6 +106,10 @@ def sign(candidate, metadata):
 			for p in sorted(Path(tmp).rglob('*')):
 				if p.is_file():
 					z.write(p, p.relative_to(tmp))
+	write_checksums(candidate, metadata)
+
+
+def write_checksums(candidate, metadata):
 	with (Path(candidate) / 'SHA256SUMS').open('w') as sums:
 		for name in sorted(metadata['assets']):
 			sums.write(f'{hashlib.sha256((Path(candidate) / name).read_bytes()).hexdigest()}  {name}\n')
