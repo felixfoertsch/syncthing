@@ -24,6 +24,9 @@ on:
       suffix:
         description: "Optional custom release suffix, for example 2026.10.08.1"
         required: false
+      expected_control:
+        description: "Exact refreshed control SHA; stale dispatches stop"
+        required: false
       rebuild:
         description: "Build new immutable release even when source is unchanged"
         type: boolean
@@ -32,8 +35,79 @@ on:
     - cron: "17 04 * * *"
 
 jobs:
-  build:
+  refresh-check:
     if: github.repository == 'felixfoertsch/syncthing' && github.ref == 'refs/heads/patch-queue'
+    permissions:
+      contents: read
+    runs-on: macos-14
+    outputs:
+      current: ${{ steps.guard.outputs.current }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, Node.js 24
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Reject stale control
+        id: guard
+        env:
+          CONTROL: ${{ github.sha }}
+          EXPECTED: ${{ github.event.inputs.expected_control }}
+        run: |
+          set -euo pipefail
+          if [[ "$(git ls-remote origin refs/heads/patch-queue | awk '{print $1}')" == "$CONTROL" && ( -z "$EXPECTED" || "$EXPECTED" == "$CONTROL" ) ]]; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Prepare control without write credentials
+        if: steps.guard.outputs.current == 'true'
+        run: python3 scripts/control-refresh.py prepare refresh
+        env:
+          CONTROL: ${{ github.sha }}
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6, Node.js 24
+        if: steps.guard.outputs.current == 'true'
+        with:
+          name: control-refresh
+          path: refresh/
+          retention-days: 90
+          if-no-files-found: error
+
+  refresh:
+    needs: refresh-check
+    if: needs.refresh-check.outputs.current == 'true'
+    permissions:
+      contents: write
+      actions: write
+    runs-on: macos-14
+    outputs:
+      unchanged: ${{ steps.promote.outputs.unchanged }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, Node.js 24
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7, Node.js 24
+        with:
+          name: control-refresh
+          path: refresh
+      - name: Verify backup, independently reconstruct, atomically promote
+        id: promote
+        env:
+          CONTROL: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REFRESH_REBUILD: ${{ github.event.inputs.rebuild || 'false' }}
+          REFRESH_UPSTREAM_TAG: ${{ github.event.inputs.upstream_tag }}
+          REFRESH_SUFFIX: ${{ github.event.inputs.suffix }}
+        run: |
+          set -euo pipefail
+          result="$(python3 scripts/control-refresh.py promote refresh | tail -n 1)"
+          if [[ "$result" == "$CONTROL" ]]; then
+            echo 'unchanged=true' >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: refresh
+    if: needs.refresh.outputs.unchanged == 'true' && github.repository == 'felixfoertsch/syncthing' && github.ref == 'refs/heads/patch-queue'
     permissions:
       contents: read
     runs-on: macos-14
@@ -53,6 +127,7 @@ jobs:
           CONTROL: ${{ github.sha }}
       - name: Test control
         run: |
+          python3 scripts/tests/test-control-refresh.py
           python3 scripts/tests/test-custom-release.py
           python3 scripts/tests/test-publisher.py
           python3 scripts/tests/test-unchanged-release.py

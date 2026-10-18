@@ -8,6 +8,10 @@ export CUSTOM_RELEASE_BUILDS='darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/t
 source scripts/update-custom-release.sh
 resolve_upstream_tag
 export CUSTOM_RELEASE_UPSTREAM_TAG="$upstream_tag" CUSTOM_RELEASE_SUFFIX="$suffix" CUSTOM_RELEASE_UPSTREAM_REF="$upstream_ref"
+# build.go scans all local tags, including lightweight tags. Archive refs belong
+# to control recovery only; remove them from this disposable, credential-free clone.
+git for-each-ref --format='delete %(refname)' refs/tags/archive/patch-queue/ | git update-ref --stdin
+[[ -z "$(git for-each-ref --format='%(refname)' refs/tags/archive/patch-queue/)" ]] || exit 1
 # This process retains trusted control script even after source checkout changes.
 main
 source_sha="$(git rev-parse HEAD)"

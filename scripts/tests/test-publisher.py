@@ -25,13 +25,16 @@ spec.loader.exec_module(module)
 class PublisherTests(unittest.TestCase):
 	def test_workflow_separates_untrusted_build_from_signing_and_write(self):
 		text = (ROOT / '.github/workflows/custom-release.yml').read_text()
-		build, publish = text.split('  publish:', 1)
+		build, publish = text.split('  build:', 1)[1].split('  publish:', 1)
 		self.assertNotIn('contents: write', build)
 		self.assertNotIn('secrets.', build)
-		self.assertNotIn('actions: write', text)
+		self.assertNotIn('actions: write', build + publish)
+		refresh_check, promoter = text.split('  refresh-check:', 1)[1].split('  refresh:', 1)
+		self.assertNotIn('contents: write', refresh_check)
+		self.assertNotIn('secrets.', refresh_check + promoter.split('  build:', 1)[0])
 		self.assertNotIn('sync-upstream.sh\n', text)
-		self.assertEqual(text.count('ref: ${{ github.sha }}'), 2)
-		self.assertEqual(text.count('persist-credentials: false'), 2)
+		self.assertEqual(text.count('ref: ${{ github.sha }}'), 4)
+		self.assertEqual(text.count('persist-credentials: false'), 4)
 		self.assertLess(publish.index('Verify candidate'), publish.index('Import Developer ID'))
 		self.assertLess(publish.index('Sign verified archive'), publish.index('Publish verified source'))
 		self.assertNotIn('go run', publish)
@@ -56,7 +59,7 @@ class PublisherTests(unittest.TestCase):
 			for bad in (assets[:1], assets + [assets[0]], [dict(assets[0], digest='sha256:'+'0'*64), assets[1]]):
 				with self.assertRaises(AssertionError): release_module.verify(p, dict(release, assets=bad))
 		text = (ROOT / '.github/workflows/custom-release.yml').read_text()
-		self.assertEqual(text.count("github.repository == 'felixfoertsch/syncthing'"), 2)
+		self.assertEqual(text.count("github.repository == 'felixfoertsch/syncthing'"), 3)
 		self.assertIn('--draft=false --prerelease --latest=false', text)
 
 	def test_checksum_first_incomplete_draft_fails_with_remedy_before_download(self):

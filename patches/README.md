@@ -1,5 +1,29 @@
 # Local Syncthing patches
 
+`patch-queue` tracks actual upstream default-branch source with the complete
+ordered `NNNN` queue and explicitly owned control files. Scheduled refresh runs
+before builds, independently reconstructs with exact old-control code, rejects
+unknown source changes and upstream ownership collisions, and keeps workflow
+blobs and modes unchanged. `scripts/control-upstream.json` records upstream
+repository, default ref and selected commit; ref changes or ancestry rewinds stop.
+
+Every rewrite restores a self-contained old-control bundle into an empty repo,
+uploads bundle plus SHA-256 manifest with requested 90-day retention, and restores
+downloaded bytes again before promotion. Atomic expected-SHA push preserves exact
+old commit under immutable lightweight `archive/patch-queue/<full-SHA>` tag.
+Existing wrong archive tags stop promotion; no non-atomic fallback exists.
+Git can skip an already-up-to-date tag even with an explicit lease; that lease
+is not a compare-only assertion. Existing tags therefore rely on preflight and
+post-push direct-object reads plus immutable-tag policy. A post-push mismatch
+stops before dispatch; automation never rolls back or retags the archive.
+`backup.json` binds old control and bundle hash; adjacent `candidate.json` binds
+old control, reconstructed result and selected upstream default ref/SHA; recorded
+`scripts/control-upstream.json` binds upstream repository identity.
+Archive tags are excluded from disposable source-build tag inventories before
+`build.go` runs; version tags, releases and binaries remain untouched. New control
+gets an explicit workflow dispatch with expected SHA and original rebuild intent;
+old run skips builds. Failed dispatch stops; next scheduled run can recover.
+
 `patch-queue` owns control scripts, workflows and ordered `NNNN` patches.
 `main` contains upstream default-branch source plus all accepted patches, without
 control scripts, queue files or workflows. Stable archives use latest numeric
