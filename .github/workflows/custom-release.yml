@@ -3,6 +3,9 @@ name: custom release
 permissions:
   contents: read
 
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
 # Every trigger updates the same branches and release tags. Never cancel a publisher.
 concurrency:
   group: custom-release

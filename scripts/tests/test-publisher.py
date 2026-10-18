@@ -27,6 +27,7 @@ class PublisherTests(unittest.TestCase):
 		text = (ROOT / '.github/workflows/custom-release.yml').read_text()
 		build, publish = text.split('  build:', 1)[1].split('  publish:', 1)
 		self.assertNotIn('contents: write', build)
+		self.assertIn('PYTHONDONTWRITEBYTECODE: "1"', text)
 		self.assertNotIn('secrets.', build)
 		self.assertNotIn('actions: write', build + publish)
 		refresh_check, promoter = text.split('  refresh-check:', 1)[1].split('  refresh:', 1)
