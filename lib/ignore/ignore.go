@@ -190,6 +190,14 @@ func (m *Matcher) Parse(r io.Reader, file string) error {
 	return m.parseLocked(r, file)
 }
 
+// Invalidate makes the next Load re-read ignore files even when their mtimes
+// are unchanged, as can happen when a remote update preserves a timestamp.
+func (m *Matcher) Invalidate() {
+	m.mut.Lock()
+	defer m.mut.Unlock()
+	m.changeDetector.Reset()
+}
+
 func (m *Matcher) parseLocked(r io.Reader, file string) error {
 	lines, patterns, err := parseIgnoreFile(m.fs, r, file, m.changeDetector, make(map[string]struct{}))
 	// Error is saved and returned at the end. We process the patterns
