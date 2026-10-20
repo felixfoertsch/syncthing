@@ -1336,6 +1336,17 @@ func (f *folder) updateLocalsFromPulling(fs []protocol.FileInfo) error {
 		return err
 	}
 	f.emitDiskChangeEvents(fs, events.RemoteChangeDetected)
+	// The watcher may suppress events for files changed by the puller, and
+	// periodic scans may be disabled. Reload remotely changed ignore rules
+	// through the normal scan path, including after deletion. A full scan
+	// also updates entries which became ignored or unignored.
+	for _, file := range fs {
+		if file.Name == ".stignore" && !file.IsInvalid() {
+			f.ignores.Invalidate()
+			f.ScheduleScan()
+			break
+		}
+	}
 	return nil
 }
 
