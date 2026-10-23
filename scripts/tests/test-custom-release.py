@@ -1,0 +1,541 @@
+#!/usr/bin/env python3
+"""Offline release-automation regressions: real Git repositories, mocked Go/GitHub."""
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+WORKFLOW = ROOT / '.github/workflows/custom-release.yml'
+RELEASE = ROOT / 'scripts/update-custom-release.sh'
+SYNC = ROOT / 'scripts/sync-upstream.sh'
+TAG = 'v2.1.5-2026.10.08.1'
+
+
+def workflow_script(name):
+    """Extract one literal run block without requiring a YAML library on runners."""
+    lines = WORKFLOW.read_text().splitlines()
+    start = lines.index('      - name: ' + name) + 1
+    while lines[start] != '        run: |':
+        start += 1
+    script = []
+    for line in lines[start + 1:]:
+        if line and not line.startswith('          '):
+            break
+        script.append(line[10:])
+    return '\n'.join(script) + '\n'
+
+
+class ReleaseTests(unittest.TestCase):
+    def run_cmd(self, *args, cwd=None, check=True, env=None):
+        result = subprocess.run(args, cwd=cwd or self.work,
+                                env=env or self.env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if check and result.returncode:
+            self.fail(f'{args}: exit {result.returncode}\n{result.stdout}\n{result.stderr}')
+        return result
+
+    def git(self, *args, cwd=None):
+        return self.run_cmd('git', *args, cwd=cwd).stdout.strip()
+
+    def write(self, path, content):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.work = self.base / 'work'
+        self.upstream = self.base / 'official'
+        self.remote = self.base / 'fork.git'
+        self.bin = self.base / 'bin'
+        self.bin.mkdir()
+        self.env = os.environ.copy()
+        # Do not inherit the real workflow's credentials, output paths or release inputs.
+        for key in list(self.env):
+            if key.startswith(('CUSTOM_RELEASE_', 'SYNC_', 'GITHUB_', 'GH_', 'GIT_')):
+                self.env.pop(key)
+        self.env.update({
+            'GIT_AUTHOR_NAME': 'Release regression test',
+            'GIT_AUTHOR_EMAIL': 'test@example.invalid',
+            'GIT_COMMITTER_NAME': 'Release regression test',
+            'GIT_COMMITTER_EMAIL': 'test@example.invalid',
+            'GIT_CONFIG_GLOBAL': os.devnull,
+            'GIT_CONFIG_NOSYSTEM': '1',
+            'PATH': str(self.bin) + os.pathsep + os.environ['PATH'],
+            'CUSTOM_RELEASE_UPSTREAM_URL': str(self.upstream),
+            'CUSTOM_RELEASE_SUFFIX': '2026.10.08.1',
+            'CUSTOM_RELEASE_BUILDS': 'linux/amd64/binary/0',
+            'CUSTOM_RELEASE_SIGN_DARWIN': '0',
+            'CUSTOM_RELEASE_PUSH': '1',
+            'CUSTOM_RELEASE_REBUILD_EXISTING': '1',
+            'CUSTOM_RELEASE_CREATE_GITEA_RELEASE': '0',
+            'GITHUB_REPOSITORY': 'test/fork',
+            'GITHUB_OUTPUT': str(self.base / 'output'),
+            'GITHUB_ENV': str(self.base / 'env'),
+            'RUNNER_TEMP': str(self.base),
+            'MOCK_LOG': str(self.base / 'commands.jsonl'),
+            'MOCK_API_STATUS': '404',
+            'MOCK_DRAFT': 'false',
+        })
+        for path in ('output', 'env', 'commands.jsonl'):
+            (self.base / path).touch()
+        self.run_cmd('git', 'init', '-q', '-b', 'main', str(self.upstream), cwd=self.base)
+        for name in ('content.txt', 'marker.txt'):
+            self.write(self.upstream / name, 'original\n')
+        self.write(self.upstream / 'build.go', '// fixture only\n')
+        self.write(self.upstream / 'README.md', '# Official Syncthing\n\nOriginal paragraph.\n')
+        self.write(self.upstream / '.github/workflows/upstream.yml', 'name: upstream\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'upstream fixture', cwd=self.upstream)
+        for tag in ('v2.1.4', 'v2.1.5', 'v2.2.0-rc.1'):
+            self.git('tag', tag, cwd=self.upstream)
+        self.run_cmd('git', 'init', '-q', '--bare', '-b', 'main', str(self.remote), cwd=self.base)
+        self.run_cmd('git', 'clone', '-q', str(self.upstream), str(self.work), cwd=self.base)
+        self.git('remote', 'set-url', 'origin', str(self.remote))
+        for name, target in (('0001-sync-stignore.patch', 'content.txt'),
+                             ('0002-webui-build-marker.patch', 'marker.txt')):
+            self.write(self.work / 'patches' / name,
+                       f'diff --git a/{target} b/{target}\n'
+                       f'--- a/{target}\n+++ b/{target}\n@@ -1 +1 @@\n-original\n+patched\n')
+        self.write(self.work / 'patches/README.md', 'Fixture patch documentation\n')
+        self.write(self.work / 'patches/README-prefix.md', (ROOT / 'patches/README-prefix.md').read_text())
+        for source, destination in ((RELEASE, 'scripts/update-custom-release.sh'),
+                                    (SYNC, 'scripts/sync-upstream.sh'),
+                                    (ROOT / 'scripts/reconstruct.sh', 'scripts/reconstruct.sh'),
+                                    (WORKFLOW, '.github/workflows/custom-release.yml'),
+                                    (Path(__file__), 'scripts/tests/test-custom-release.py')):
+            self.write(self.work / destination, source.read_text())
+        self.write(self.work / 'scripts/tests/test-custom-release-macos-runner.bats', '# fixture\n')
+        self.write(self.work / 'scripts/check-freshness.sh', '#!/usr/bin/env bash\nexit 0\n')
+        self.write(self.work / 'scripts/verify-release.py', '# fixture: tested separately\n')
+        self.write(self.work / '.gitea/workflows/custom-release.yml', 'name: fixture\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'fork automation fixture')
+        self.git('branch', 'patch-queue')
+        self.git('push', '-q', 'origin', 'main')
+        self.git('fetch', '-q', 'origin')
+        stub = r'''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys
+args = sys.argv[1:]
+name = pathlib.Path(sys.argv[0]).name
+with open(os.environ['MOCK_LOG'], 'a') as f:
+    f.write(json.dumps([name] + args) + '\n')
+if name == 'go':
+    if os.environ.get('MOCK_GO_FAIL') == '1':
+        sys.exit(1)
+    if '-build-out' in args:
+        path = pathlib.Path(args[args.index('-build-out') + 1])
+        path.write_text(subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True))
+    sys.exit(0)
+if args[0] == 'api' and any('/actions/workflows' in arg for arg in args):
+    path = pathlib.Path(os.environ['MOCK_WORKFLOWS'])
+    workflows = json.loads(path.read_text())
+    endpoint = next(arg for arg in args if '/actions/workflows' in arg)
+    if endpoint.endswith('/disable'):
+        if os.environ.get('MOCK_POLICY_FAIL') == 'disable':
+            sys.exit(1)
+        workflow_id = int(endpoint.split('/')[-2])
+        for workflow in workflows:
+            if workflow['id'] == workflow_id:
+                workflow['state'] = 'disabled_manually'
+        path.write_text(json.dumps(workflows))
+    else:
+        if os.environ.get('MOCK_POLICY_FAIL') == 'list':
+            sys.exit(1)
+        assert '--paginate' in args
+        # Execute the real selector rather than hard-coding its expected output.
+        sys.exit(subprocess.run(['jq', '-r', args[args.index('--jq') + 1]],
+                                input=json.dumps({'workflows': workflows}), text=True).returncode)
+    sys.exit(0)
+if args[0] == 'api':
+    status = os.environ['MOCK_API_STATUS']
+    if status == '200':
+        print(json.dumps({'draft': os.environ['MOCK_DRAFT'] == 'true'}))
+        sys.exit(0)
+    if status == 'transport':
+        print('network unavailable', file=sys.stderr)
+    else:
+        print(json.dumps({'status': status, 'message': 'API fixture error'}))
+    sys.exit(1)
+if args[:2] == ['release', 'view']:
+    if 'assets' in args:
+        print(os.environ.get('MOCK_EXISTING_ASSET', ''))
+    else:
+        print(os.environ['MOCK_DRAFT'])
+if args[:2] == ['release', 'download']:
+    directory = pathlib.Path(args[args.index('--dir') + 1])
+    (directory / args[args.index('--pattern') + 1]).write_text('mismatched archive\n')
+if args[:2] == ['release', 'upload'] and os.environ.get('MOCK_UPLOAD_FAIL') == '1':
+    sys.exit(1)
+'''
+        for name in ('go', 'gh'):
+            self.write(self.bin / name, stub)
+            (self.bin / name).chmod(0o755)
+
+    def release(self, check=True):
+        return self.run_cmd('bash', str(RELEASE), check=check)
+
+    def commands(self, name):
+        return [row for row in map(json.loads, (self.base / 'commands.jsonl').read_text().splitlines())
+                if row[0] == name and not (name == 'gh' and row[1] == 'api' and '/releases/tags/' in row[2])]
+
+    def preflight(self, check=True):
+        return self.run_cmd('bash', '-euo', 'pipefail', '-c',
+                            'source scripts/update-custom-release.sh; resolve_upstream_tag; printf \"tag=%s-%s\\n\" \"$upstream_tag\" \"$suffix\" >> \"$GITHUB_OUTPUT\"', check=check)
+
+    def publish(self, check=True):
+        self.env['RELEASE_TAG'] = TAG
+        self.env.setdefault('CUSTOM_RELEASE_CHANNEL', 'stable')
+        self.env.setdefault('CUSTOM_RELEASE_UPSTREAM_TAG', 'v2.1.5')
+        self.env.setdefault('CUSTOM_RELEASE_UPSTREAM_REF', self.git('rev-parse', 'v2.1.5', cwd=self.upstream))
+        self.env.setdefault('RELEASE_EXISTS', 'false')
+        if self.env['RELEASE_EXISTS'] == 'true':
+            self.env['MOCK_API_STATUS'] = '200'
+        return self.run_cmd('bash', '-euo', 'pipefail', '-c',
+                            workflow_script('Publish GitHub release'), check=check)
+
+    def fake_assets(self):
+        self.write(self.work / 'candidate/release-notes.md', '# fixture\n')
+        digest = hashlib.sha256(b'fixture archive\n').hexdigest()
+        self.write(self.work / 'candidate/SHA256SUMS', f'{digest}  syncthing-test.tar.gz\n')
+        self.write(self.work / 'candidate/syncthing-test.tar.gz', 'fixture archive\n')
+
+    def test_new_release_uses_latest_stable_and_applies_patches(self):
+        self.release()
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'v2.1.5'))
+        self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
+        self.assertEqual((self.work / 'marker.txt').read_text(), 'patched\n')
+        self.assertFalse((self.work / '.github/workflows').exists())
+        self.assertEqual(self.git('rev-parse', TAG), self.git('rev-parse', TAG, cwd=self.remote))
+        self.assertTrue((self.work / 'dist/syncthing-linux-amd64').is_file())
+        self.assertTrue(any(row[1] == 'test' for row in self.commands('go')))
+        checksums = (self.work / 'dist/SHA256SUMS').read_text()
+        self.assertNotIn('release-notes.md', checksums)
+        self.assertNotIn('SHA256SUMS', checksums)
+        self.assertIn('syncthing-linux-amd64', checksums)
+
+    def test_orphan_remote_tag_rebuilds_exact_commit_without_retagging(self):
+        self.release()
+        original_tag = self.git('rev-parse', TAG, cwd=self.remote)
+        original_commit = self.git('rev-parse', f'{TAG}^{{commit}}', cwd=self.remote)
+        fresh = self.base / 'retry'
+        self.run_cmd('git', 'clone', '-q', str(self.remote), str(fresh), cwd=self.base)
+        self.work = fresh
+        # Exercise the remote-only branch, not just the local tag fast path.
+        self.run_cmd('git', 'tag', '-d', TAG, check=False)
+        self.release()
+        self.assertEqual(self.git('rev-parse', 'HEAD'), original_commit)
+        self.assertEqual(self.git('rev-parse', TAG, cwd=self.remote), original_tag)
+        self.assertEqual(self.git('rev-parse', TAG), original_tag)
+        self.assertTrue((self.work / 'dist/syncthing-linux-amd64').is_file())
+
+    def test_existing_local_tag_can_resume_after_failed_build(self):
+        self.env['MOCK_GO_FAIL'] = '1'
+        self.assertNotEqual(self.release(check=False).returncode, 0)
+        original_tag = self.git('rev-parse', TAG)
+        self.env.pop('MOCK_GO_FAIL')
+        self.release()
+        self.assertEqual(self.git('rev-parse', TAG, cwd=self.remote), original_tag)
+
+    def test_default_tag_skip_is_preserved_for_other_hosts(self):
+        self.release()
+        shutil.rmtree(self.work / 'dist')
+        self.env['CUSTOM_RELEASE_REBUILD_EXISTING'] = '0'
+        self.release()
+        self.assertFalse((self.work / 'dist').exists())
+
+    def test_remote_failure_is_not_treated_as_missing_tag(self):
+        self.git('remote', 'set-url', 'origin', str(self.base / 'missing.git'))
+        result = self.release(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('could not check tag', result.stderr)
+        self.assertEqual(self.commands('go'), [])
+
+
+
+
+
+    def test_nightly_builds_exact_upstream_commit_as_separate_prerelease(self):
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.preflight()
+        commit = self.git('rev-parse', 'main', cwd=self.upstream)
+        tag = f'v2.1.5-nightly.{commit}-2026.10.08.1'
+        self.assertIn(f'tag={tag}', (self.base / 'output').read_text())
+        self.env['CUSTOM_RELEASE_UPSTREAM_REF'] = commit
+        self.release()
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), commit)
+        self.assertEqual(self.git('rev-parse', tag), self.git('rev-parse', tag, cwd=self.remote))
+        self.assertEqual(self.git('tag', '-l', TAG), '')
+        self.git('checkout', '--detach', 'patch-queue')
+        self.fake_assets()
+        self.publish()
+        self.assertIn('--prerelease', self.commands('gh')[0])
+        self.assertIn('--latest=false', self.commands('gh')[0])
+
+    def test_manual_tag_and_suffix_are_resolved_once(self):
+        self.env.update(CUSTOM_RELEASE_UPSTREAM_TAG='v2.1.4', CUSTOM_RELEASE_SUFFIX='2026.10.08.1')
+        self.preflight()
+        self.assertIn('tag=v2.1.4-2026.10.08.1', (self.base / 'output').read_text())
+
+    def test_invalid_inputs_are_rejected_before_api_call(self):
+        for key, value in (('CUSTOM_RELEASE_UPSTREAM_TAG', 'main'),
+                           ('CUSTOM_RELEASE_SUFFIX', 'bad\nINJECTED=true')):
+            with self.subTest(key=key):
+                self.env[key] = value
+                self.assertNotEqual(self.preflight(check=False).returncode, 0)
+                self.env.pop(key)
+        self.assertEqual(self.commands('gh'), [])
+
+    def test_publication_is_draft_then_upload_then_publish(self):
+        self.fake_assets()
+        self.publish()
+        commands = self.commands('gh')
+        self.assertEqual([row[2] for row in commands], ['create', 'upload', 'upload', 'edit'])
+        self.assertNotIn('candidate/SHA256SUMS', commands[1])
+        self.assertEqual(commands[2][-1], 'candidate/SHA256SUMS')
+        self.assertIn('--draft', commands[0])
+        self.assertIn('--verify-tag', commands[0])
+        self.assertNotIn('--clobber', commands[1])
+        self.assertIn('--draft=false', commands[3])
+        self.assertTrue(all(row[3] == TAG for row in commands))
+
+    def test_upload_failure_does_not_publish_incomplete_release(self):
+        self.fake_assets()
+        self.env['MOCK_UPLOAD_FAIL'] = '1'
+        self.assertNotEqual(self.publish(check=False).returncode, 0)
+        self.assertEqual([row[2] for row in self.commands('gh')], ['create', 'upload'])
+
+    def test_draft_retry_does_not_recreate_release(self):
+        self.fake_assets()
+        self.env.update(RELEASE_EXISTS='true', MOCK_DRAFT='true')
+        self.publish()
+        self.assertEqual([row[2] for row in self.commands('gh')], ['view', 'view', 'upload', 'upload', 'edit'])
+
+    def test_draft_retry_rejects_mismatched_bytes(self):
+        self.fake_assets()
+        self.env.update(RELEASE_EXISTS='true', MOCK_DRAFT='true',
+                        MOCK_EXISTING_ASSET='syncthing-test.tar.gz')
+        self.assertNotEqual(self.publish(check=False).returncode, 0)
+        self.assertNotIn('upload', [row[2] for row in self.commands('gh')])
+        self.assertNotIn('edit', [row[2] for row in self.commands('gh')])
+
+    def test_published_release_is_never_clobbered(self):
+        self.fake_assets()
+        self.env['RELEASE_EXISTS'] = 'true'
+        self.publish()
+        self.assertEqual([row[2] for row in self.commands('gh')], ['view'])
+
+    def test_missing_artifacts_fail_before_publication(self):
+        self.assertNotEqual(self.publish(check=False).returncode, 0)
+        self.assertEqual(self.commands('gh'), [])
+
+    def assert_readme(self):
+        readme = (self.work / 'README.md').read_text()
+        self.assertTrue(readme.startswith('This fork follows upstream [Syncthing]'))
+        self.assertEqual(readme.split('\n---\n\n', 1)[1], (self.upstream / 'README.md').read_text())
+        self.assertIn('1. [', readme)
+        self.assertIn('2. [', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0001-sync-stignore.patch', readme)
+        self.assertIn('https://github.com/felixfoertsch/syncthing/blob/patch-queue/patches/0002-webui-build-marker.patch', readme)
+
+    def test_root_readme_consolidation_preserves_both_documents_and_nested_files(self):
+        docker = '# Docker fixture\n\nOriginal Docker text.\n'
+        self.write(self.upstream / 'README-Docker.md', docker)
+        self.write(self.upstream / 'nested/README.md', 'Nested unchanged\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'upstream Docker documentation', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.release()
+        readme = (self.work / 'README.md').read_text()
+        self.assertIn((self.upstream / 'README.md').read_text(), readme)
+        self.assertTrue(readme.endswith(docker))
+        self.assertEqual([p.name for p in self.work.glob('README*')], ['README.md'])
+        self.assertEqual((self.work / 'nested/README.md').read_text(), 'Nested unchanged\n')
+
+    def test_release_readme_keeps_exact_upstream_suffix(self):
+        self.release()
+        self.assert_readme()
+
+    def test_upstream_sync_retains_fixes_and_does_not_self_trigger(self):
+        self.write(self.upstream / 'new-upstream-file', 'upstream update\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'new upstream commit', cwd=self.upstream)
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'HEAD', cwd=self.upstream))
+        self.assertIn('[skip ci]', self.git('log', '-1', '--format=%s'))
+        self.assertFalse((self.work / '.github/workflows').exists())
+        self.assertFalse((self.work / 'scripts').exists())
+        self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
+        self.assert_readme()
+        first = self.git('rev-parse', 'HEAD')
+        self.git('checkout', '--detach', 'patch-queue')
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual(self.git('rev-parse', 'HEAD'), first)
+
+    def test_sync_replays_current_automation_without_upstream_changes(self):
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        self.git('checkout', 'patch-queue')
+        self.write(self.work / 'patches/0002-webui-build-marker.patch',
+                   'diff --git a/marker.txt b/marker.txt\n'
+                   '--- a/marker.txt\n+++ b/marker.txt\n@@ -1 +1 @@\n-original\n+updated\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'update automation patch')
+        automation = self.git('rev-parse', 'patch-queue')
+        self.git('checkout', '--detach', automation)
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual((self.work / 'marker.txt').read_text(), 'updated\n')
+        self.assertEqual(self.git('rev-parse', 'patch-queue'), automation)
+        self.assertEqual(self.git('rev-parse', 'HEAD^'), self.git('rev-parse', 'refs/remotes/official/main'))
+        self.assertEqual(self.git('rev-list', '--count', 'refs/remotes/official/main..main'), '1')
+
+    def test_exact_absorption_is_accepted_but_conflicts_stop(self):
+        self.write(self.upstream / 'content.txt', 'patched\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'absorb first patch', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        self.release()
+        self.assertEqual((self.work / 'content.txt').read_text(), 'patched\n')
+        self.assertEqual((self.work / 'marker.txt').read_text(), 'patched\n')
+        self.assertFalse((self.work / 'patches').exists())
+
+    def test_patch_conflict_never_publishes(self):
+        self.write(self.upstream / 'content.txt', 'conflicting upstream\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'conflict', cwd=self.upstream)
+        self.env['CUSTOM_RELEASE_CHANNEL'] = 'nightly'
+        result = self.release(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('patch conflict', result.stderr)
+        self.assertEqual(self.git('tag', '-l', '*2026.10.08*', cwd=self.remote), '')
+
+    def test_stale_patch_queue_stops_tag_publication(self):
+        self.env['CUSTOM_RELEASE_AUTOMATION_REF'] = '0' * 40
+        result = self.release(check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('automation changed during build', result.stderr)
+        self.assertEqual(self.git('tag', '-l', TAG, cwd=self.remote), '')
+
+    def test_sync_rejects_remote_main_race_without_overwriting_winner(self):
+        self.write(self.work / 'race.txt', 'concurrent main\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'concurrent publication')
+        winner = self.git('rev-parse', 'HEAD')
+        self.git('push', '-q', 'origin', 'main')
+        # Simulate checkout fetched before competing publisher advanced main.
+        self.git('update-ref', 'refs/remotes/origin/main', self.git('rev-parse', 'patch-queue'))
+        self.git('checkout', '--detach', 'patch-queue')
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        result = self.run_cmd('bash', str(SYNC), check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('main changed during reconstruction', result.stderr)
+        self.assertEqual(self.git('rev-parse', 'main', cwd=self.remote), winner)
+
+    def test_default_suffix_uses_berlin_date_and_next_free_counter(self):
+        self.env.pop('CUSTOM_RELEASE_SUFFIX')
+        day = self.run_cmd('env', 'TZ=Europe/Berlin', 'date', '+%Y.%m.%d').stdout.strip()
+        self.git('tag', f'v2.1.5-{day}.1')
+        self.preflight()
+        self.assertIn(f'tag=v2.1.5-{day}.2', (self.base / 'output').read_text())
+
+
+    def configure_github_policy(self):
+        self.env.update(GITHUB_ACTIONS='true', GITHUB_SERVER_URL='https://github.com',
+                        GH_TOKEN='test-ephemeral-token', MOCK_WORKFLOWS=str(self.base / 'workflows.json'))
+        self.write(self.base / 'workflows.json', json.dumps([
+            {'id': 1, 'path': '.github/workflows/custom-release.yml', 'state': 'active'},
+            {'id': 2, 'path': '.github/workflows/build-syncthing.yaml', 'state': 'active'},
+            {'id': 3, 'path': '.github/workflows/stignore-review.yml', 'state': 'active'},
+            {'id': 4, 'path': 'dynamic/security-check', 'state': 'active'},
+            {'id': 5, 'path': '.github/workflows/old.yml', 'state': 'disabled_manually'},
+            {'id': 6, 'path': '.github/workflows/new-upstream.yml', 'state': 'active'},
+        ]))
+
+    def policy(self, check=True):
+        return self.run_cmd('bash', '-euo', 'pipefail', '-c',
+                            'source "$1"; enforce_github_workflow_policy', 'policy', str(SYNC), check=check)
+
+    def test_policy_disables_inherited_and_review_workflows_only(self):
+        self.configure_github_policy()
+        self.policy()
+        states = {w['id']: w['state'] for w in json.loads((self.base / 'workflows.json').read_text())}
+        self.assertEqual(states, {1: 'active', 2: 'disabled_manually', 3: 'disabled_manually',
+                                  4: 'active', 5: 'disabled_manually', 6: 'disabled_manually'})
+        calls = len(self.commands('gh'))
+        self.policy()
+        self.assertEqual(len(self.commands('gh')) - calls, 2)  # Two reads; no duplicate disables.
+
+    def test_policy_api_errors_stop_before_any_repository_push(self):
+        self.configure_github_policy()
+        before = self.git('rev-parse', 'main', cwd=self.remote)
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        for failure in ('list', 'disable'):
+            with self.subTest(failure=failure):
+                self.env['MOCK_POLICY_FAIL'] = failure
+                result = self.run_cmd('bash', str(SYNC), check=False)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.git('rev-parse', 'main', cwd=self.remote), before)
+                self.assertNotIn('official/main', self.git('for-each-ref', '--format=%(refname)'))
+
+    def test_policy_requires_credentials_before_api_requests(self):
+        self.configure_github_policy()
+        self.env.pop('GH_TOKEN')
+        self.assertNotEqual(self.policy(check=False).returncode, 0)
+        self.assertEqual(self.commands('gh'), [])
+
+    def test_sync_removes_inherited_workflows_even_without_upstream_changes(self):
+        # Reproduce the old early return: exactly one fork commit, unchanged upstream.
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', '.github/workflows'),
+                         '')
+        first = self.git('rev-parse', 'main')
+        self.git('checkout', '--detach', 'patch-queue')
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual(self.git('rev-parse', 'main'), first)
+
+    def test_future_upstream_workflows_stay_out_of_main(self):
+        for host in ('.github', '.gitea'):
+            self.write(self.upstream / host / 'workflows/future.yaml', 'name: unwanted future build\n')
+        self.git('add', '.', cwd=self.upstream)
+        self.git('commit', '-qm', 'add upstream workflows', cwd=self.upstream)
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        for host in ('.github', '.gitea'):
+            self.assertEqual(self.git('ls-tree', '-r', '--name-only', 'main', '--', host + '/workflows'),
+                             '')
+            self.assertEqual(self.git('show', 'refs/remotes/official/main:' + host + '/workflows/future.yaml'),
+                             'name: unwanted future build')
+        self.assertEqual(self.git('rev-parse', 'refs/remotes/official/main^{tree}'),
+                         self.git('rev-parse', 'main^{tree}', cwd=self.upstream))
+
+    def test_sync_never_creates_upstream_branch(self):
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        self.assertEqual(self.git('for-each-ref', '--format=%(refname)',
+                                  'refs/heads/upstream', cwd=self.remote), '')
+        self.assertEqual(self.git('for-each-ref', '--format=%(refname)',
+                                  'refs/heads/upstream'), '')
+
+    def test_policy_runs_even_when_upstream_sync_is_a_noop(self):
+        self.env['SYNC_UPSTREAM_URL'] = str(self.upstream)
+        self.run_cmd('bash', str(SYNC))
+        before = self.git('rev-parse', 'main')
+        self.git('checkout', '--detach', 'patch-queue')
+        self.configure_github_policy()
+        result = self.run_cmd('bash', str(SYNC))
+        self.assertIn('Workflow policy verified', result.stdout)
+        self.assertIn('Upstream is current', result.stdout)
+        self.assertEqual(self.git('rev-parse', 'main'), before)
+
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)
