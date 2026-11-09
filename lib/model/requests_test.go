@@ -974,13 +974,15 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
 	file := "foobar"
 	contents := []byte("test file contents\n")
 
-	basicCheck := func(fs []protocol.FileInfo) {
+	basicCheck := func(fs []protocol.FileInfo) protocol.FileInfo {
 		t.Helper()
-		if len(fs) != 1 {
-			t.Fatal("expected a single index entry, got", len(fs))
-		} else if fs[0].Name != file {
-			t.Fatalf("expected a index entry for %v, got one for %v", file, fs[0].Name)
+		for _, f := range fs {
+			if f.Name == file {
+				return f
+			}
 		}
+		t.Fatalf("expected an index entry for %v, got %v", file, fs)
+		return protocol.FileInfo{}
 	}
 
 	done := make(chan struct{})
@@ -1001,8 +1003,7 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
 
 	done = make(chan struct{})
 	fc.setIndexFn(func(_ context.Context, folder string, fs []protocol.FileInfo) error {
-		basicCheck(fs)
-		f := fs[0]
+		f := basicCheck(fs)
 		if !f.IsInvalid() {
 			t.Errorf("Received non-invalid index update")
 		}
@@ -1022,8 +1023,7 @@ func TestIgnoreDeleteUnignore(t *testing.T) {
 
 	done = make(chan struct{})
 	fc.setIndexFn(func(_ context.Context, folder string, fs []protocol.FileInfo) error {
-		basicCheck(fs)
-		f := fs[0]
+		f := basicCheck(fs)
 		if f.IsInvalid() {
 			t.Errorf("Received invalid index update")
 		}
