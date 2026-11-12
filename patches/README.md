@@ -31,7 +31,7 @@ upstream release; nightly archives use upstream default-branch commit. Both
 channels replay identical queue and stop on conflicts; exact reverse application
 alone proves absorption.
 
-GitHub workflow uses built-in job token, macos-14 ARM64 runner, Developer ID
+GitHub workflow uses built-in job token, macos-15 ARM64 runner, Developer ID
 signing, Darwin ARM64 zip and Linux amd64/arm64 tar archives. Nightly releases
 are prereleases, never latest. Future stable tags use
 `<upstream-tag>-YYYY.MM.DD.N` with Europe/Berlin date and first free same-day

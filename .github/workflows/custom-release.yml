@@ -42,7 +42,7 @@ jobs:
     if: github.repository == 'felixfoertsch/syncthing' && github.ref == 'refs/heads/patch-queue'
     permissions:
       contents: read
-    runs-on: macos-14
+    runs-on: macos-15
     outputs:
       current: ${{ steps.guard.outputs.current }}
     steps:
@@ -80,7 +80,7 @@ jobs:
     permissions:
       contents: write
       actions: write
-    runs-on: macos-14
+    runs-on: macos-15
     outputs:
       unchanged: ${{ steps.promote.outputs.unchanged }}
     steps:
@@ -113,7 +113,7 @@ jobs:
     if: needs.refresh.outputs.unchanged == 'true' && github.repository == 'felixfoertsch/syncthing' && github.ref == 'refs/heads/patch-queue'
     permissions:
       contents: read
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -177,7 +177,7 @@ jobs:
     if: github.repository == 'felixfoertsch/syncthing' && github.ref == 'refs/heads/patch-queue'
     permissions:
       contents: write
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       max-parallel: 1
