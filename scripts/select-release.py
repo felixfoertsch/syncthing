@@ -50,8 +50,8 @@ def verify(release, source, upstream, upstream_tag, channel):
 		p = Path(tmp)
 		tag = release['tag_name']
 		expected = {f'syncthing-{platform}-{tag}{extension}' for platform, extension in
-			(('macos-arm64', '.zip'), ('linux-amd64', '.tar.gz'), ('linux-arm64', '.tar.gz'))}
-		if len(release['assets']) != 4 or {a['name'] for a in release['assets']} != expected | {'SHA256SUMS'}:
+			(('macos-arm64', '.zip'), ('linux-amd64', '.tar.gz'), ('linux-arm64', '.tar.gz'), ('windows-amd64', '.zip'))}
+		if len(release['assets']) != len(expected) + 1 or {a['name'] for a in release['assets']} != expected | {'SHA256SUMS'}:
 			return False
 		# Transport/auth errors fail closed, not inferred absence.
 		subprocess.run(['gh', 'release', 'download', tag, '--repo', 'felixfoertsch/syncthing', '--dir', tmp], check=True)
@@ -72,7 +72,7 @@ def verify(release, source, upstream, upstream_tag, channel):
 		candidate = load('verify-candidate')
 		candidate.check(p, os.environ['CONTROL'], channel)
 		candidate.verify_build_info(p, metadata)
-		name = next(n for n in expected if n.endswith('.zip'))
+		name = next(n for n in expected if n.startswith('syncthing-macos-'))
 		with zipfile.ZipFile(p / name) as z:
 			binary = p / 'syncthing'
 			binary.write_bytes(z.read(name.removesuffix('.zip') + '/syncthing'))

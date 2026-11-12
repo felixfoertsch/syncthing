@@ -5,7 +5,7 @@
 	grep -F 'runs-on: macos-14' "$workflow"
 	grep -F 'channel: [stable, nightly]' "$workflow"
 	grep -F 'runs-on: macos-14' "$workflow"
-	grep -F 'darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/tar/0' "$BATS_TEST_DIRNAME/../build-candidate.sh"
+	grep -F 'darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/tar/0 windows/amd64/zip/0' "$BATS_TEST_DIRNAME/../build-candidate.sh"
 	grep -F 'Sign verified archive without executing candidate' "$workflow"
 	grep -F 'codesign --force --dryrun' "$workflow"
 	grep -F 'if: always()' "$workflow"

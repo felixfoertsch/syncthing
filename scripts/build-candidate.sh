@@ -4,7 +4,7 @@ set -euo pipefail
 [[ "$(uname -m)" == arm64 ]] || exit 1
 expected_main="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
 export CUSTOM_RELEASE_CHANNEL="$CHANNEL" CUSTOM_RELEASE_SIGN_DARWIN=0 CUSTOM_RELEASE_PUSH=0
-export CUSTOM_RELEASE_BUILDS='darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/tar/0'
+export CUSTOM_RELEASE_BUILDS='darwin/arm64/zip/1 linux/amd64/tar/0 linux/arm64/tar/0 windows/amd64/zip/0'
 source scripts/update-custom-release.sh
 resolve_upstream_tag
 export CUSTOM_RELEASE_UPSTREAM_TAG="$upstream_tag" CUSTOM_RELEASE_SUFFIX="$suffix" CUSTOM_RELEASE_UPSTREAM_REF="$upstream_ref"

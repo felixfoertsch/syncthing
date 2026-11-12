@@ -42,7 +42,7 @@ def reuse(candidate, release, download):
 		(staged / 'candidate.json').write_text(json.dumps(metadata, sort_keys=True))
 		candidate_module.check(staged, metadata['control'], metadata['channel'])
 		candidate_module.verify_build_info(staged, metadata)
-		darwin = next(name for name in metadata['assets'] if name.endswith('.zip'))
+		darwin = next(name for name in metadata['assets'] if name.startswith('syncthing-macos-'))
 		reused_darwin = any(a['name'] == darwin for a in assets)
 		if reused_darwin:
 			candidate_module.verify_signature(staged / darwin)

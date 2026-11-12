@@ -23,7 +23,7 @@ def check(candidate, control, channel):
 	assert re.fullmatch(re.escape(metadata['upstream_tag']) + r'-\d{4}\.\d{2}\.\d{2}\.[1-9]\d*', metadata['tag'])
 	assert ('-nightly.' in metadata['tag']) == (channel == 'nightly')
 	expected = {f'syncthing-{platform}-{metadata["tag"]}{extension}' for platform, extension in
-		(('macos-arm64', '.zip'), ('linux-amd64', '.tar.gz'), ('linux-arm64', '.tar.gz'))}
+		(('macos-arm64', '.zip'), ('linux-amd64', '.tar.gz'), ('linux-arm64', '.tar.gz'), ('windows-amd64', '.zip'))}
 	assert set(metadata['assets']) == expected
 	assert {p.name for p in candidate.iterdir()} == expected | {'candidate.json', 'source.bundle', 'SHA256SUMS', 'release-notes.md'}
 	for name, digest in metadata['assets'].items():
@@ -43,7 +43,8 @@ def check(candidate, control, channel):
 			assert path not in seen and kind not in (-1, 0o120000)
 			seen.add(path)
 		root = name.removesuffix('.zip').removesuffix('.tar.gz')
-		assert sum(regular and path == f'{root}/syncthing' for path, regular, _ in members) == 1
+		binary_name = 'syncthing.exe' if name.startswith('syncthing-windows-') else 'syncthing'
+		assert sum(regular and path == f'{root}/{binary_name}' for path, regular, _ in members) == 1
 		assert all(PurePosixPath(path).parts[0] == root for path, _, _ in members)
 		assert all(kind in (0, 0o040000, 0o100000) for _, _, kind in members)
 	return metadata
@@ -54,7 +55,9 @@ def verify_build_info(candidate, metadata):
 	with tempfile.TemporaryDirectory() as tmp:
 		for name in metadata['assets']:
 			root = name.removesuffix('.zip').removesuffix('.tar.gz')
-			member = f'{root}/syncthing'
+			platform = 'windows' if name.startswith('syncthing-windows-') else 'darwin' if name.startswith('syncthing-macos-') else 'linux'
+			binary_name = 'syncthing.exe' if platform == 'windows' else 'syncthing'
+			member = f'{root}/{binary_name}'
 			if name.endswith('.zip'):
 				with zipfile.ZipFile(Path(candidate) / name) as z:
 					data = z.read(member)
@@ -68,11 +71,12 @@ def verify_build_info(candidate, metadata):
 			assert metadata['tag'].encode() in data
 			assert f'vcs.revision={metadata["source"]}' in info
 			assert 'vcs.modified=false' in info
-			platform = 'darwin' if name.endswith('.zip') else 'linux'
 			arch = 'amd64' if '-amd64-' in name else 'arm64'
 			assert f'GOOS={platform}' in info and f'GOARCH={arch}' in info
 			if platform == 'darwin':
 				assert 'CGO_ENABLED=1' in info and 'modernc.org/sqlite' not in info
+			else:
+				assert 'CGO_ENABLED=0' in info
 
 
 def verify_signature(archive):
@@ -86,7 +90,7 @@ def verify_signature(archive):
 
 
 def sign(candidate, metadata):
-	name = next(n for n in metadata['assets'] if n.endswith('.zip'))
+	name = next(n for n in metadata['assets'] if n.startswith('syncthing-macos-'))
 	archive = Path(candidate) / name
 	if os.environ.get('CUSTOM_RELEASE_REUSE_DARWIN') == '1':
 		verify_signature(archive)
